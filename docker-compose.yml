@@ -60,7 +60,6 @@ services:
       - CLOUDFLARE_BYPASS_URLS=http://cloudflare_bypass_1:8000,http://cloudflare_bypass_2:8000,http://cloudflare_bypass_3:8000
     volumes:
       - ./upwork_bot.db:/app/upwork_bot.db
-      - ./upwork_bot.log:/app/upwork_bot.log
     networks:
       - outbid_network
     deploy:
