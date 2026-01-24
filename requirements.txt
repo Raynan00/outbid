@@ -1,0 +1,35 @@
+# Core dependencies
+python-telegram-bot[all]==20.7
+openai==1.12.0
+google-genai>=0.8.0
+DrissionPage==4.0.4b18
+aiosqlite==0.19.0
+python-dotenv==1.0.0
+
+# HTTP client for async requests - compatible with google-genai
+aiohttp>=3.9.0
+
+# Additional utilities
+typing-extensions==4.9.0
+pytz==2023.3
+
+# 2Captcha integration for Cloudflare Turnstile
+requests==2.31.0
+
+# HTML parsing for BrightData responses
+beautifulsoup4==4.12.3
+lxml==5.1.0
+
+# TLS Client for Cloudflare Bypass (Lightweight)
+curl_cffi==0.5.10
+
+# Payment Processing
+stripe==7.0.0
+fastapi==0.109.0
+uvicorn==0.25.0
+
+# Development dependencies (optional)
+# pytest==7.4.3
+# pytest-asyncio==0.21.1
+# black==23.12.1
+# flake8==6.1.0

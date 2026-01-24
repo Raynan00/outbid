@@ -1,0 +1,68 @@
+# ==================== SENSITIVE FILES ====================
+# NEVER commit these!
+.env
+*.pem
+*.key
+
+# Proxy credentials
+Webshare*.txt
+*proxies*.txt
+
+# ==================== DATABASE ====================
+*.db
+*.sqlite
+*.sqlite3
+
+# ==================== LOGS ====================
+*.log
+logs/
+
+# ==================== DEBUG FILES ====================
+debug_*.html
+debug_*.json
+
+# ==================== PYTHON ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+venv/
+.venv/
+ENV/
+
+# ==================== BROWSER PROFILE ====================
+browser_profile/
+proxy_auth_plugin/
+
+# ==================== IDE ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ==================== OS ====================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==================== DOCKER ====================
+# Don't ignore docker-compose.yml - we need it
+# But ignore any local overrides
+docker-compose.override.yml
