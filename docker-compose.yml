@@ -58,8 +58,9 @@ services:
     environment:
       - DISPLAY=:99
       - CLOUDFLARE_BYPASS_URLS=http://cloudflare_bypass_1:8000,http://cloudflare_bypass_2:8000,http://cloudflare_bypass_3:8000
+      - DATABASE_PATH=/app/data/upwork_bot.db
     volumes:
-      - ./upwork_bot.db:/app/upwork_bot.db
+      - ./data:/app/data
     networks:
       - outbid_network
     deploy:
@@ -75,10 +76,12 @@ services:
     command: ["python", "webhook_server.py"]
     env_file:
       - .env
+    environment:
+      - DATABASE_PATH=/app/data/upwork_bot.db
     ports:
       - "5000:5000"  # Expose webhook port
     volumes:
-      - ./upwork_bot.db:/app/upwork_bot.db
+      - ./data:/app/data
     networks:
       - outbid_network
     deploy:
