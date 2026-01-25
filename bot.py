@@ -213,18 +213,25 @@ class UpworkBot:
             )
             return ONBOARDING_BIO
 
-        # Save bio and complete onboarding
+        # Save bio
         await db_manager.update_user_onboarding(user_id, context=bio)
         await db_manager.clear_user_state(user_id)
 
+        # Show "Finish Setup" button for country detection
+        setup_url = f"{config.WEBHOOK_BASE_URL}/setup/{user_id}"
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Finish Setup", url=setup_url)]
+        ]
+        
         await update.message.reply_text(
-            "🎉 **Setup Complete!**\n\n"
-            "You're all set! I'll start monitoring for jobs matching your keywords.\n\n"
-            "📋 **Commands:**\n"
-            "/status - Check bot status\n"
-            "/settings - Update your profile\n\n"
-            "🔔 **Job alerts will appear here automatically!**",
-            parse_mode='Markdown'
+            "✨ *Almost done!*\n\n"
+            "One last step — I'll detect your location for the best pricing.\n\n"
+            "🇳🇬 *Nigeria?* Local Naira pricing!\n"
+            "🌍 *Elsewhere?* USD pricing.\n\n"
+            "👇 *Tap to complete setup:*",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return ConversationHandler.END
 
@@ -476,42 +483,11 @@ class UpworkBot:
             # Refresh user info after creation
             user_info = await db_manager.get_user_info(user_id)
             
-            # NEW: Ask for country selection first for pricing
-            setup_url = f"{config.WEBHOOK_BASE_URL}/setup/{user_id}"
-            
-            keyboard = [
-                [InlineKeyboardButton("🇳🇬 Nigeria (₦ Naira)", callback_data="set_country_NG_new")],
-                [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL_new")],
-                [InlineKeyboardButton("🔍 Auto-Detect & Complete Setup", url=setup_url)]
-            ]
-            
+            # Go straight to keywords onboarding (country detection happens at the end)
             await self.safe_reply_text(
                 update,
                 "🎯 *Welcome to Upwork First Responder!*\n\n"
                 "I help you apply before everyone else — with AI-written proposals.\n\n"
-                "📍 *Where are you located?*\n"
-                "_This determines your pricing options._\n\n"
-                "👇 *Select your region:*",
-                parse_mode='Markdown',
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return ConversationHandler.END
-        
-        # If returning from setup, check if country is now set
-        if is_setup_done:
-            user_info = await db_manager.get_user_info(user_id)
-            country = user_info.get('country_code', 'GLOBAL')
-            
-            if country == 'NG':
-                country_msg = "🇳🇬 *Nigeria detected!* You'll see local Naira pricing."
-            else:
-                country_msg = "🌍 *International pricing* will be shown in USD."
-            
-            # Continue to keywords onboarding
-            await self.safe_reply_text(
-                update,
-                f"{country_msg}\n\n"
-                "Now let's set up your job alerts!\n\n"
                 "📝 *Enter your skills/technologies (comma separated):*\n\n"
                 "*Examples:*\n"
                 "• `Python, Django, API, Backend`\n"
@@ -521,6 +497,32 @@ class UpworkBot:
             )
             await db_manager.set_user_state(user_id, "ONBOARDING_KEYWORDS")
             return ONBOARDING_KEYWORDS
+        
+        # If returning from setup (after clicking "Finish Setup" button)
+        if is_setup_done:
+            user_info = await db_manager.get_user_info(user_id)
+            country = user_info.get('country_code', 'GLOBAL')
+            
+            if country == 'NG':
+                country_msg = "🇳🇬 *Nigeria detected!* You'll see local Naira pricing."
+            else:
+                country_msg = "🌍 *International pricing* will be shown in USD."
+            
+            # Show final welcome message - onboarding complete!
+            await self.safe_reply_text(
+                update,
+                f"🎉 *Setup Complete!*\n\n"
+                f"{country_msg}\n\n"
+                "I'll start monitoring for jobs matching your keywords.\n\n"
+                "📋 *Commands:*\n"
+                "/status - Check bot status\n"
+                "/settings - Update your profile\n"
+                "/upgrade - View subscription plans\n"
+                "/country - Change pricing region\n\n"
+                "🔔 *Job alerts will appear here automatically!*",
+                parse_mode='Markdown'
+            )
+            return ConversationHandler.END
         
         # Check and handle subscription expiry (auto-downgrade if needed)
         was_downgraded = await access_service.check_and_handle_expiry(user_id)
@@ -543,29 +545,10 @@ class UpworkBot:
 
         # Check onboarding status - ALL users (scout or paid) need to complete onboarding
         if not user_info or not user_info.get('keywords'):
-            # Check if existing user needs country detection (legacy users)
-            if not user_info.get('country_code') or user_info.get('country_code') == 'GLOBAL':
-                # Offer to select country for better pricing
-                setup_url = f"{config.WEBHOOK_BASE_URL}/setup/{user_id}"
-                keyboard = [
-                    [InlineKeyboardButton("🇳🇬 Nigeria (₦ Naira)", callback_data="set_country_NG_new")],
-                    [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL_new")],
-                    [InlineKeyboardButton("🔍 Auto-Detect & Complete Setup", url=setup_url)]
-                ]
-                await self.safe_reply_text(
-                    update,
-                    "🎯 *Let's finish setting up!*\n\n"
-                    "📍 *Where are you located?*\n"
-                    "_This determines your pricing options._\n\n"
-                    "👇 *Select your region:*",
-                    parse_mode='Markdown',
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                return ConversationHandler.END
-            
-            # Country is set, continue with keywords
+            # Need keywords - go straight to keywords input
             await self.safe_reply_text(
                 update,
+                "🎯 *Let's set up your job alerts!*\n\n"
                 "📝 *Enter your skills/technologies (comma separated):*\n\n"
                 "*Examples:*\n"
                 "• `Python, Django, API, Backend`\n"
@@ -1144,13 +1127,13 @@ class UpworkBot:
         else:
             current_display = "🌍 International (USD pricing via Stripe)"
         
-        # Manual options first, auto-detect at bottom
+        # Auto-detect option
         setup_url = f"{config.WEBHOOK_BASE_URL}/setup/{user_id}"
         
         keyboard = [
+            [InlineKeyboardButton("🔄 Auto-Detect My Location", url=setup_url)],
             [InlineKeyboardButton("🇳🇬 Nigeria (₦ Naira)", callback_data="set_country_NG")],
-            [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL")],
-            [InlineKeyboardButton("🔍 Auto-Detect Location", url=setup_url)]
+            [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL")]
         ]
         
         await self.safe_reply_text(
@@ -1171,41 +1154,7 @@ class UpworkBot:
         await query.answer()
         user_id = query.from_user.id
 
-        if query.data == "set_country_NG_new":
-            # New user selected Nigeria - set country and continue to onboarding
-            await db_manager.update_user_country(user_id, 'NG')
-            
-            await query.edit_message_text(
-                "🇳🇬 *Nigeria selected!*\n\n"
-                "You'll see Naira pricing via Paystack.\n\n"
-                "📝 *Now enter your skills/technologies (comma separated):*\n\n"
-                "*Examples:*\n"
-                "• `Python, Django, API, Backend`\n"
-                "• `Copywriting, Content Marketing, SEO`\n"
-                "• `Video Editing, Premiere Pro, YouTube`",
-                parse_mode='Markdown'
-            )
-            await db_manager.set_user_state(user_id, "ONBOARDING_KEYWORDS")
-            return
-        
-        elif query.data == "set_country_GLOBAL_new":
-            # New user selected International - set country and continue to onboarding
-            await db_manager.update_user_country(user_id, 'GLOBAL')
-            
-            await query.edit_message_text(
-                "🌍 *International pricing selected*\n\n"
-                "You'll see USD pricing via Stripe.\n\n"
-                "📝 *Now enter your skills/technologies (comma separated):*\n\n"
-                "*Examples:*\n"
-                "• `Python, Django, API, Backend`\n"
-                "• `Copywriting, Content Marketing, SEO`\n"
-                "• `Video Editing, Premiere Pro, YouTube`",
-                parse_mode='Markdown'
-            )
-            await db_manager.set_user_state(user_id, "ONBOARDING_KEYWORDS")
-            return
-        
-        elif query.data == "set_country_NG":
+        if query.data == "set_country_NG":
             # User manually selected Nigeria
             await db_manager.update_user_country(user_id, 'NG')
             await query.edit_message_text(
