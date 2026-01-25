@@ -1584,12 +1584,13 @@ class UpworkBot:
                     # Format display time
                     time_display = pause_until.strftime("%I:%M %p")
                     
+                    keyboard = [[InlineKeyboardButton("▶️ Unpause Now", callback_data="pause_off")]]
                     await query.edit_message_text(
                         text=f"⏸️ *Alerts Paused*\n\n"
                         f"You won't receive alerts for *{hours} hour{'s' if hours > 1 else ''}*.\n"
-                        f"Resuming at: {time_display}\n\n"
-                        "Use /settings to resume early.",
-                        parse_mode='Markdown'
+                        f"Resuming at: {time_display}",
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup(keyboard)
                     )
                 except ValueError:
                     await query.edit_message_text("Invalid pause duration.")
