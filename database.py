@@ -462,18 +462,18 @@ class DatabaseManager:
                 await self.activate_referral(user_id)
 
     async def get_active_users(self) -> List[Dict[str, Any]]:
-        """Get all active users (paid users, or all users if payments disabled)."""
+        """Get all users who have completed onboarding (have keywords).
+        
+        Note: This returns ALL users with keywords, regardless of payment status.
+        Payment status only affects whether proposals are blurred or full - 
+        scouts still receive alerts with blurred content.
+        """
         async with aiosqlite.connect(self.db_path) as db:
-            if config.PAYMENTS_ENABLED:
-                # Only return paid users
-                cursor = await db.execute(
-                    'SELECT telegram_id, keywords, created_at FROM users WHERE is_paid = 1'
-                )
-            else:
-                # Return all users who have completed onboarding (have keywords)
-                cursor = await db.execute(
-                    'SELECT telegram_id, keywords, created_at FROM users WHERE keywords IS NOT NULL AND keywords != ""'
-                )
+            # Return all users who have completed onboarding (have keywords)
+            # Payment status is checked separately in send_job_alert for blurring
+            cursor = await db.execute(
+                'SELECT telegram_id, keywords, created_at FROM users WHERE keywords IS NOT NULL AND keywords != ""'
+            )
             rows = await cursor.fetchall()
 
         users = []
