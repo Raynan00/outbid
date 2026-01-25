@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, HTMLResponse
 
 from config import config
 from database import db_manager
@@ -545,8 +545,6 @@ async def detect_country(telegram_id: int, request: Request):
 
 
 # ==================== ONBOARDING SETUP ENDPOINT ====================
-
-from fastapi.responses import HTMLResponse
 
 @app.get("/setup/{telegram_id}", response_class=HTMLResponse)
 async def setup_country(telegram_id: int, request: Request):
