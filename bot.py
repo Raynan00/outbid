@@ -226,10 +226,7 @@ class UpworkBot:
         
         await update.message.reply_text(
             "✨ *Almost done!*\n\n"
-            "One last step — I'll detect your location for the best pricing.\n\n"
-            "🇳🇬 *Nigeria?* Local Naira pricing!\n"
-            "🌍 *Elsewhere?* USD pricing.\n\n"
-            "👇 *Tap to complete setup:*",
+            "Tap below to complete your setup and start receiving job alerts.",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -500,25 +497,15 @@ class UpworkBot:
         
         # If returning from setup (after clicking "Finish Setup" button)
         if is_setup_done:
-            user_info = await db_manager.get_user_info(user_id)
-            country = user_info.get('country_code', 'GLOBAL')
-            
-            if country == 'NG':
-                country_msg = "🇳🇬 *Nigeria detected!* You'll see local Naira pricing."
-            else:
-                country_msg = "🌍 *International pricing* will be shown in USD."
-            
             # Show final welcome message - onboarding complete!
             await self.safe_reply_text(
                 update,
-                f"🎉 *Setup Complete!*\n\n"
-                f"{country_msg}\n\n"
+                "🎉 *Setup Complete!*\n\n"
                 "I'll start monitoring for jobs matching your keywords.\n\n"
                 "📋 *Commands:*\n"
                 "/status - Check bot status\n"
                 "/settings - Update your profile\n"
-                "/upgrade - View subscription plans\n"
-                "/country - Change pricing region\n\n"
+                "/upgrade - View subscription plans\n\n"
                 "🔔 *Job alerts will appear here automatically!*",
                 parse_mode='Markdown'
             )
