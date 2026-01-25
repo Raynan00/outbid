@@ -761,38 +761,60 @@ class DatabaseManager:
                 logger.info(f"Updated filters for user {telegram_id}")
 
     # Pause/Schedule Settings
-    async def set_user_pause(self, telegram_id: int, pause_start: int, pause_end: int) -> None:
-        """Set user pause hours (24h format, e.g., 23 for 11pm, 7 for 7am)."""
+    async def set_user_pause(self, telegram_id: int, hours: int) -> datetime:
+        """Pause alerts for X hours. Returns the pause_until datetime."""
+        pause_until = datetime.now() + timedelta(hours=hours)
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
-                'UPDATE users SET pause_start = ?, pause_end = ?, updated_at = ? WHERE telegram_id = ?',
-                (pause_start, pause_end, datetime.now(), telegram_id)
+                'UPDATE users SET pause_start = ?, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
+                (pause_until.isoformat(), datetime.now(), telegram_id)
             )
             await db.commit()
-            logger.info(f"Set pause hours for user {telegram_id}: {pause_start}:00 - {pause_end}:00")
+            logger.info(f"Paused alerts for user {telegram_id} until {pause_until}")
+        return pause_until
 
     async def clear_user_pause(self, telegram_id: int) -> None:
-        """Clear user pause settings."""
+        """Clear user pause (resume alerts)."""
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 'UPDATE users SET pause_start = NULL, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
                 (datetime.now(), telegram_id)
             )
             await db.commit()
-            logger.info(f"Cleared pause for user {telegram_id}")
+            logger.info(f"Resumed alerts for user {telegram_id}")
 
-    def is_user_paused(self, pause_start: int, pause_end: int) -> bool:
-        """Check if user is currently in pause hours."""
-        if pause_start is None or pause_end is None:
+    def is_user_paused(self, pause_until_str: str) -> bool:
+        """Check if user is currently paused. pause_until_str is ISO format datetime."""
+        if not pause_until_str:
             return False
         
-        current_hour = datetime.now().hour
+        try:
+            pause_until = datetime.fromisoformat(pause_until_str)
+            return datetime.now() < pause_until
+        except (ValueError, TypeError):
+            return False
+    
+    def get_pause_remaining(self, pause_until_str: str) -> str:
+        """Get human-readable time remaining on pause."""
+        if not pause_until_str:
+            return None
         
-        # Handle overnight pause (e.g., 23:00 to 07:00)
-        if pause_start > pause_end:
-            return current_hour >= pause_start or current_hour < pause_end
-        else:
-            return pause_start <= current_hour < pause_end
+        try:
+            pause_until = datetime.fromisoformat(pause_until_str)
+            remaining = pause_until - datetime.now()
+            
+            if remaining.total_seconds() <= 0:
+                return None
+            
+            hours = int(remaining.total_seconds() // 3600)
+            minutes = int((remaining.total_seconds() % 3600) // 60)
+            
+            if hours > 0:
+                return f"{hours}h {minutes}m remaining"
+            else:
+                return f"{minutes}m remaining"
+        except (ValueError, TypeError):
+            return None
 
     # ==================== SUBSCRIPTION MANAGEMENT ====================
     

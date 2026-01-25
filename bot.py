@@ -1102,7 +1102,7 @@ class UpworkBot:
             "• Direct link to apply on Upwork\n\n"
             "**Features:**\n"
             "• ✅ Smart filtering (budget, experience, keywords)\n"
-            "• ✅ Quiet hours (pause alerts)\n"
+            "• ✅ Pause alerts (1h, 4h, 8h, etc.)\n"
             "• ✅ War Room strategy mode\n"
             "• ✅ Mobile-friendly copy-paste\n\n"
             "**Need Help?**\n"
@@ -1547,20 +1547,22 @@ class UpworkBot:
             )
         
         elif query.data == "update_pause":
-            # Show pause/quiet hours options
+            # Show pause duration options
             keyboard = [
-                [InlineKeyboardButton("Off (No Quiet Hours)", callback_data="pause_off")],
-                [InlineKeyboardButton("10 PM - 7 AM", callback_data="pause_22_7")],
-                [InlineKeyboardButton("11 PM - 8 AM", callback_data="pause_23_8")],
-                [InlineKeyboardButton("12 AM - 6 AM", callback_data="pause_0_6")],
-                [InlineKeyboardButton("9 PM - 9 AM", callback_data="pause_21_9")],
+                [InlineKeyboardButton("⏸️ Pause 1 hour", callback_data="pause_1")],
+                [InlineKeyboardButton("⏸️ Pause 4 hours", callback_data="pause_4")],
+                [InlineKeyboardButton("⏸️ Pause 8 hours", callback_data="pause_8")],
+                [InlineKeyboardButton("😴 Pause 12 hours", callback_data="pause_12")],
+                [InlineKeyboardButton("🌙 Pause 24 hours", callback_data="pause_24")],
+                [InlineKeyboardButton("▶️ Resume Alerts", callback_data="pause_off")],
                 [InlineKeyboardButton("Cancel", callback_data="cancel_settings")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text="Set Quiet Hours\n\n"
-                "During quiet hours, you won't receive job alerts.\n"
-                "(Alerts will resume automatically after quiet hours end)",
+                text="⏸️ *Pause Alerts*\n\n"
+                "Take a break from job notifications.\n"
+                "Alerts will automatically resume when the timer ends.",
+                parse_mode='Markdown',
                 reply_markup=reply_markup
             )
         
@@ -1569,26 +1571,28 @@ class UpworkBot:
             if pause_value == "off":
                 await db_manager.clear_user_pause(user_id)
                 await query.edit_message_text(
-                    text="Quiet hours disabled.\n\n"
-                    "You'll receive alerts 24/7.\n"
-                    "Use /settings to view all settings."
+                    text="▶️ *Alerts Resumed*\n\n"
+                    "You'll receive job alerts again.\n"
+                    "Use /settings to view all settings.",
+                    parse_mode='Markdown'
                 )
             else:
-                parts = pause_value.split("_")
-                if len(parts) == 2:
-                    pause_start = int(parts[0])
-                    pause_end = int(parts[1])
-                    await db_manager.set_user_pause(user_id, pause_start, pause_end)
+                try:
+                    hours = int(pause_value)
+                    pause_until = await db_manager.set_user_pause(user_id, hours)
                     
-                    # Format display
-                    start_display = f"{pause_start}:00" if pause_start < 12 else f"{pause_start}:00"
-                    end_display = f"{pause_end}:00" if pause_end < 12 else f"{pause_end}:00"
+                    # Format display time
+                    time_display = pause_until.strftime("%I:%M %p")
                     
                     await query.edit_message_text(
-                        text=f"Quiet hours set: {start_display} - {end_display}\n\n"
-                        "You won't receive alerts during these hours.\n"
-                        "Use /settings to view all settings."
+                        text=f"⏸️ *Alerts Paused*\n\n"
+                        f"You won't receive alerts for *{hours} hour{'s' if hours > 1 else ''}*.\n"
+                        f"Resuming at: {time_display}\n\n"
+                        "Use /settings to resume early.",
+                        parse_mode='Markdown'
                     )
+                except ValueError:
+                    await query.edit_message_text("Invalid pause duration.")
 
         elif query.data == "cancel_settings":
             await query.edit_message_text(
@@ -1882,15 +1886,12 @@ class UpworkBot:
         exp_display = ', '.join(exp_levels) if exp_levels else 'All levels'
         
         # Format pause status
-        pause_start = user_info.get('pause_start')
-        pause_end = user_info.get('pause_end')
-        if pause_start is not None and pause_end is not None:
-            pause_display = f"{pause_start}:00 - {pause_end}:00"
-            is_paused = db_manager.is_user_paused(pause_start, pause_end)
-            pause_status = " (ACTIVE)" if is_paused else ""
+        pause_until_str = user_info.get('pause_start')  # We store pause_until in pause_start field
+        if pause_until_str and db_manager.is_user_paused(pause_until_str):
+            remaining = db_manager.get_pause_remaining(pause_until_str)
+            pause_display = f"⏸️ Paused ({remaining})"
         else:
-            pause_display = "Off"
-            pause_status = ""
+            pause_display = "▶️ Active"
 
         # Format subscription display (hide "Scout" label)
         if subscription.get('is_active'):
@@ -1909,7 +1910,7 @@ class UpworkBot:
             f"   ({bio_length}/500 characters)\n\n"
             f"💰 *Budget Filter:* {budget_display}\n"
             f"📈 *Experience:* {exp_display}\n"
-            f"🌙 *Quiet Hours:* {pause_display}{pause_status}\n\n"
+            f"🔔 *Alerts:* {pause_display}\n\n"
             f"🔗 *Referral Code:* `{referral_code}`\n"
             f"👥 *Referrals:* {referral_stats['activated_referrals']} activated, {referral_stats['total_referrals']} total\n\n"
             "Click buttons below to update:"
@@ -1921,7 +1922,7 @@ class UpworkBot:
             [InlineKeyboardButton("Update Bio", callback_data="update_bio")],
             [InlineKeyboardButton("Set Budget Filter", callback_data="update_budget")],
             [InlineKeyboardButton("Set Experience Filter", callback_data="update_experience")],
-            [InlineKeyboardButton("Set Quiet Hours", callback_data="update_pause")],
+            [InlineKeyboardButton("⏸️ Pause Alerts", callback_data="update_pause")],
             [InlineKeyboardButton("Cancel", callback_data="cancel_settings")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1977,11 +1978,10 @@ class UpworkBot:
                 if not user_info:
                     continue
                 
-                # Check if user is currently paused (quiet hours)
-                pause_start = user_info.get('pause_start')
-                pause_end = user_info.get('pause_end')
-                if db_manager.is_user_paused(pause_start, pause_end):
-                    logger.debug(f"Skipping user {user_id} - in quiet hours")
+                # Check if user is currently paused
+                pause_until_str = user_info.get('pause_start')  # pause_until stored in pause_start
+                if db_manager.is_user_paused(pause_until_str):
+                    logger.debug(f"Skipping user {user_id} - alerts paused")
                     continue
                 
                 # Check budget filter
