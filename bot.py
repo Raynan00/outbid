@@ -1879,15 +1879,15 @@ class UpworkBot:
                         logger.debug(f"Skipping user {user_id} - job exp {job_exp} not in {exp_levels}")
                         continue
                 
-                # Check keyword match
+                # Check keyword match (admins get ALL jobs for testing)
                 should_alert = False
-                if user_info.get('keywords'):
+                if user_id in admin_users:
+                    # Admins get all jobs regardless of keywords
+                    should_alert = True
+                elif user_info.get('keywords'):
                     user_keywords = [kw.strip() for kw in user_info['keywords'].split(',') if kw.strip()]
                     if job_data.matches_keywords(user_keywords):
                         should_alert = True
-                elif user_id in admin_users:
-                    # Admins get all jobs regardless of keywords
-                    should_alert = True
                 
                 if should_alert:
                     users_to_alert.append(user_id)
