@@ -1879,15 +1879,15 @@ class UpworkBot:
                         logger.debug(f"Skipping user {user_id} - job exp {job_exp} not in {exp_levels}")
                         continue
                 
-                # Check keyword match (admins get ALL jobs for testing)
+                # Check keyword match
                 should_alert = False
-                if user_id in admin_users:
-                    # Admins get all jobs regardless of keywords
-                    should_alert = True
-                elif user_info.get('keywords'):
+                if user_info.get('keywords'):
                     user_keywords = [kw.strip() for kw in user_info['keywords'].split(',') if kw.strip()]
                     if job_data.matches_keywords(user_keywords):
                         should_alert = True
+                elif user_id in admin_users:
+                    # Admins get all jobs regardless of keywords
+                    should_alert = True
                 
                 if should_alert:
                     users_to_alert.append(user_id)
@@ -1904,14 +1904,26 @@ class UpworkBot:
             start_time = time.time()
             logger.info(f"Broadcasting to {len(users_to_alert)} users - generating proposals in parallel...")
             
-            # Phase 1: Generate all proposals in parallel
+            # Phase 1: Generate proposals for PAID users only (scouts get blurred via send_job_alert)
             async def prepare_alert(user_id: int):
-                """Prepare alert for a user (generate proposal, check limits, etc.)"""
+                """Prepare alert for a user (generate proposal for paid, mark scouts for blurred)"""
                 try:
                     # Check authorization
                     if not await db_manager.is_user_authorized(user_id):
                         return None
                     
+                    # Check if user can view proposals (paid vs scout)
+                    permissions = await access_service.get_user_permissions(user_id)
+                    
+                    # Scout users - return marker to trigger send_job_alert (blurred flow, NO AI cost)
+                    if not permissions.get('can_view_proposal', False):
+                        return {
+                            'user_id': user_id,
+                            'type': 'scout',  # Will be handled by send_job_alert
+                            'message': None
+                        }
+                    
+                    # PAID USER - Generate full proposal with AI
                     # Get user context
                     user_context = await db_manager.get_user_context(user_id)
                     if not user_context:
@@ -1973,20 +1985,26 @@ class UpworkBot:
             
             # Filter out None/errors and separate by type
             valid_alerts = [a for a in prepared_alerts if a and not isinstance(a, Exception)]
+            scout_alerts = [a for a in valid_alerts if a.get('type') == 'scout']
             limit_alerts = [a for a in valid_alerts if a.get('type') == 'limit']
             proposal_alerts = [a for a in valid_alerts if a.get('type') == 'proposal']
             
             generation_time = time.time() - start_time
-            logger.info(f"Generated {len(proposal_alerts)} proposals, {len(limit_alerts)} limit messages in {generation_time:.1f}s")
+            logger.info(f"Generated {len(proposal_alerts)} proposals, {len(limit_alerts)} limit msgs, {len(scout_alerts)} scout (blurred) in {generation_time:.1f}s")
             
             # Phase 2: Send all messages concurrently (Telegram API handles 30 msg/sec rate limiting)
             send_start = time.time()
+            
             async def send_prepared_alert(alert_data: dict):
                 """Send a prepared alert message"""
                 try:
                     user_id = alert_data['user_id']
                     
-                    if alert_data['type'] == 'limit':
+                    if alert_data['type'] == 'scout':
+                        # Scout user - use send_job_alert which has blurring logic (NO AI call)
+                        return await self.send_job_alert(user_id, job_data)
+                    
+                    elif alert_data['type'] == 'limit':
                         # Send limit message
                         limit_message = (
                             f"NEW JOB ALERT\n\n{job_data.title}\n\n"
@@ -2007,7 +2025,7 @@ class UpworkBot:
                             disable_web_page_preview=True
                         )
                     else:
-                        # Send proposal message
+                        # Send proposal message (paid user)
                         keyboard = [
                             [InlineKeyboardButton("🚀 Open Job on Upwork", url=job_data.link)],
                             [InlineKeyboardButton("🧠 Brainstorm Strategy", callback_data=f"strategy_{job_data.id}")]
@@ -2026,7 +2044,7 @@ class UpworkBot:
                     return False
             
             # Send all messages concurrently (Telegram API queues automatically at 30 msg/sec)
-            all_alerts = proposal_alerts + limit_alerts
+            all_alerts = proposal_alerts + limit_alerts + scout_alerts
             if all_alerts:
                 send_results = await asyncio.gather(
                     *[send_prepared_alert(alert) for alert in all_alerts],
