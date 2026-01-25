@@ -268,22 +268,25 @@ class DatabaseManager:
                 logger.info(f"Updated onboarding for user: {telegram_id}")
 
     async def is_user_authorized(self, telegram_id: int) -> bool:
-        """Check if user is authorized (admin or paid, unless payments disabled)."""
-        # First check if user is admin
+        """Check if user is authorized to receive job alerts.
+        
+        All users who have completed onboarding (have keywords) are authorized.
+        Payment status only affects whether proposals are blurred or full,
+        not whether they can receive alerts.
+        """
+        # Admins are always authorized
         if config.is_admin(telegram_id):
             return True
 
-        # If payments are disabled, allow all users
-        if not config.PAYMENTS_ENABLED:
-            return True
-
+        # Check if user exists and has completed onboarding (has keywords)
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                'SELECT is_paid FROM users WHERE telegram_id = ?',
+                'SELECT keywords FROM users WHERE telegram_id = ?',
                 (telegram_id,)
             )
             result = await cursor.fetchone()
 
+        # User is authorized if they have keywords set
         return result is not None and bool(result[0])
 
     # State Management Operations
