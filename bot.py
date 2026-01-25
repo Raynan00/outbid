@@ -471,11 +471,11 @@ class UpworkBot:
             # New user - add to database
             await db_manager.add_user(user_id, is_paid=False)
             
-            # Process referral if provided (not setup_done)
-            if args and len(args[0]) >= 4 and args[0] != 'setup_done':
-                referral_success = await db_manager.process_referral(args[0], user_id)
-                if referral_success:
-                    logger.info(f"Processed referral {args[0]} for new user {user_id}")
+            # Referrals disabled for now
+            # if args and len(args[0]) >= 4 and args[0] != 'setup_done':
+            #     referral_success = await db_manager.process_referral(args[0], user_id)
+            #     if referral_success:
+            #         logger.info(f"Processed referral {args[0]} for new user {user_id}")
             
             # Refresh user info after creation
             user_info = await db_manager.get_user_info(user_id)
@@ -966,9 +966,6 @@ class UpworkBot:
                 f"   • Total Draft Records: {stats['total_proposal_drafts']}\n"
                 f"   • Regular Drafts: {stats['total_regular_drafts']}\n"
                 f"   • Strategy Drafts: {stats['total_strategy_drafts']}\n\n"
-                f"🎁 **Referrals:**\n"
-                f"   • Total: {stats['total_referrals']}\n"
-                f"   • Activated: {stats['activated_referrals']}\n\n"
                 f"💡 Use /admin_users to see user list\n"
                 f"💡 Use /admin_drafts to see draft activity"
             )
@@ -1846,10 +1843,6 @@ class UpworkBot:
         # Get subscription status
         subscription = await db_manager.get_subscription_status(user_id)
         plan_name = billing_service.get_plan_name(subscription.get('plan', 'scout'))
-        
-        # Get referral stats
-        referral_stats = await db_manager.get_referral_stats(user_id)
-        referral_code = await db_manager.create_referral_code(user_id)
 
         # Show current settings with update buttons
         keywords_display = user_info['keywords'] or 'Not set'
@@ -1899,8 +1892,6 @@ class UpworkBot:
             f"💰 *Budget Filter:* {budget_display}\n"
             f"📈 *Experience:* {exp_display}\n"
             f"🔔 *Alerts:* {pause_display}\n\n"
-            f"🔗 *Referral Code:* `{referral_code}`\n"
-            f"👥 *Referrals:* {referral_stats['activated_referrals']} activated, {referral_stats['total_referrals']} total\n\n"
             "Click buttons below to update:"
         )
 
@@ -1922,13 +1913,10 @@ class UpworkBot:
 
     # Payment Activation Handler (would be called when user provides transaction ID)
     async def activate_payment(self, user_id: int, transaction_id: str) -> bool:
-        """Activate user payment and process referrals."""
+        """Activate user payment."""
         try:
             # Mark user as paid
             await db_manager.activate_user_payment(user_id)
-
-            # Generate referral code for new paid user
-            await db_manager.create_referral_code(user_id)
 
             logger.info(f"Activated payment for user {user_id} with transaction {transaction_id}")
             return True
