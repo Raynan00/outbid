@@ -379,7 +379,7 @@ async def handle_stripe_webhook(
 
 # ==================== PAYMENT CALLBACKS ====================
 
-@app.get("/payment/callback")
+@app.get("/payment/callback", response_class=HTMLResponse)
 async def payment_callback(request: Request):
     """
     Handle Paystack payment callback (redirect after payment).
@@ -391,9 +391,11 @@ async def payment_callback(request: Request):
     """
     # Get reference from query params
     reference = request.query_params.get('reference')
+    bot_username = config.TELEGRAM_BOT_USERNAME
+    redirect_url = f"https://t.me/{bot_username}"
     
     if not reference:
-        return JSONResponse({"status": "error", "message": "Missing reference"})
+        return _payment_result_html(False, "Missing payment reference", redirect_url)
     
     # Verify payment
     success, data = await billing_service.verify_paystack_transaction(reference)
@@ -421,14 +423,70 @@ async def payment_callback(request: Request):
             except Exception as e:
                 logger.error(f"Backup grant_access failed for user {telegram_id}: {e}")
             
-            # Return success response
-            return JSONResponse({
-                "status": "success",
-                "message": "Payment verified! Return to Telegram to continue.",
-                "redirect": f"https://t.me/{config.TELEGRAM_TOKEN.split(':')[0]}"
-            })
+            # Return success page with redirect
+            return _payment_result_html(True, "Payment successful!", redirect_url)
     
-    return JSONResponse({"status": "error", "message": "Payment verification failed"})
+    return _payment_result_html(False, "Payment verification failed", redirect_url)
+
+
+def _payment_result_html(success: bool, message: str, redirect_url: str) -> str:
+    """Generate HTML page for payment result with auto-redirect."""
+    emoji = "✅" if success else "❌"
+    color = "#4ade80" if success else "#ef4444"
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Payment {'Complete' if success else 'Failed'}</title>
+        <meta http-equiv="refresh" content="2;url={redirect_url}">
+        <script>setTimeout(function(){{ window.location.href = "{redirect_url}"; }}, 2000);</script>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: #fff;
+                margin: 0;
+            }}
+            .container {{
+                text-align: center;
+                padding: 40px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 20px;
+                backdrop-filter: blur(10px);
+                max-width: 400px;
+                margin: 20px;
+            }}
+            .emoji {{ font-size: 64px; margin-bottom: 20px; }}
+            h1 {{ font-size: 24px; margin-bottom: 10px; color: {color}; }}
+            p {{ color: #a0aec0; margin-bottom: 20px; }}
+            .btn {{
+                display: inline-block;
+                background: {color};
+                color: #1a1a2e;
+                padding: 15px 30px;
+                border-radius: 10px;
+                text-decoration: none;
+                font-weight: bold;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="emoji">{emoji}</div>
+            <h1>{message}</h1>
+            <p>Redirecting to Telegram...</p>
+            <a href="{redirect_url}" class="btn">Return to Bot</a>
+        </div>
+    </body>
+    </html>
+    """
 
 
 @app.get("/payment/success")
