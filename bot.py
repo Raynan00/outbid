@@ -476,19 +476,22 @@ class UpworkBot:
             # Refresh user info after creation
             user_info = await db_manager.get_user_info(user_id)
             
-            # NEW: Send to country detection setup page first
+            # NEW: Ask for country selection first for pricing
             setup_url = f"{config.WEBHOOK_BASE_URL}/setup/{user_id}"
             
             keyboard = [
-                [InlineKeyboardButton("🌍 Continue Setup", url=setup_url)]
+                [InlineKeyboardButton("🇳🇬 Nigeria (₦ Naira)", callback_data="set_country_NG_new")],
+                [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL_new")],
+                [InlineKeyboardButton("🔍 Auto-Detect & Complete Setup", url=setup_url)]
             ]
             
             await self.safe_reply_text(
                 update,
                 "🎯 *Welcome to Upwork First Responder!*\n\n"
                 "I help you apply before everyone else — with AI-written proposals.\n\n"
-                "First, let me detect your location for the best pricing.\n\n"
-                "👆 *Tap the button below to continue:*",
+                "📍 *Where are you located?*\n"
+                "_This determines your pricing options._\n\n"
+                "👇 *Select your region:*",
                 parse_mode='Markdown',
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
@@ -542,19 +545,19 @@ class UpworkBot:
         if not user_info or not user_info.get('keywords'):
             # Check if existing user needs country detection (legacy users)
             if not user_info.get('country_code') or user_info.get('country_code') == 'GLOBAL':
-                # Offer to detect country for better pricing
+                # Offer to select country for better pricing
                 setup_url = f"{config.WEBHOOK_BASE_URL}/setup/{user_id}"
                 keyboard = [
-                    [InlineKeyboardButton("🌍 Detect My Location", url=setup_url)],
-                    [InlineKeyboardButton("⏭️ Skip (Use International Pricing)", callback_data="skip_country_detect")]
+                    [InlineKeyboardButton("🇳🇬 Nigeria (₦ Naira)", callback_data="set_country_NG_new")],
+                    [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL_new")],
+                    [InlineKeyboardButton("🔍 Auto-Detect & Complete Setup", url=setup_url)]
                 ]
                 await self.safe_reply_text(
                     update,
                     "🎯 *Let's finish setting up!*\n\n"
-                    "I can detect your location for the best pricing.\n\n"
-                    "🇳🇬 *Nigeria?* Get local Naira pricing!\n"
-                    "🌍 *Elsewhere?* USD pricing applies.\n\n"
-                    "👇 *Choose an option:*",
+                    "📍 *Where are you located?*\n"
+                    "_This determines your pricing options._\n\n"
+                    "👇 *Select your region:*",
                     parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup(keyboard)
                 )
@@ -1141,13 +1144,13 @@ class UpworkBot:
         else:
             current_display = "🌍 International (USD pricing via Stripe)"
         
-        # Auto-detect option
+        # Manual options first, auto-detect at bottom
         setup_url = f"{config.WEBHOOK_BASE_URL}/setup/{user_id}"
         
         keyboard = [
-            [InlineKeyboardButton("🔄 Auto-Detect My Location", url=setup_url)],
             [InlineKeyboardButton("🇳🇬 Nigeria (₦ Naira)", callback_data="set_country_NG")],
-            [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL")]
+            [InlineKeyboardButton("🌍 International ($ USD)", callback_data="set_country_GLOBAL")],
+            [InlineKeyboardButton("🔍 Auto-Detect Location", url=setup_url)]
         ]
         
         await self.safe_reply_text(
@@ -1168,13 +1171,30 @@ class UpworkBot:
         await query.answer()
         user_id = query.from_user.id
 
-        if query.data == "skip_country_detect":
-            # User wants to skip country detection and use GLOBAL pricing
+        if query.data == "set_country_NG_new":
+            # New user selected Nigeria - set country and continue to onboarding
+            await db_manager.update_user_country(user_id, 'NG')
+            
+            await query.edit_message_text(
+                "🇳🇬 *Nigeria selected!*\n\n"
+                "You'll see Naira pricing via Paystack.\n\n"
+                "📝 *Now enter your skills/technologies (comma separated):*\n\n"
+                "*Examples:*\n"
+                "• `Python, Django, API, Backend`\n"
+                "• `Copywriting, Content Marketing, SEO`\n"
+                "• `Video Editing, Premiere Pro, YouTube`",
+                parse_mode='Markdown'
+            )
+            await db_manager.set_user_state(user_id, "ONBOARDING_KEYWORDS")
+            return
+        
+        elif query.data == "set_country_GLOBAL_new":
+            # New user selected International - set country and continue to onboarding
             await db_manager.update_user_country(user_id, 'GLOBAL')
             
             await query.edit_message_text(
                 "🌍 *International pricing selected*\n\n"
-                "You can change this later with /country\n\n"
+                "You'll see USD pricing via Stripe.\n\n"
                 "📝 *Now enter your skills/technologies (comma separated):*\n\n"
                 "*Examples:*\n"
                 "• `Python, Django, API, Backend`\n"
