@@ -194,7 +194,7 @@ class UpworkBot:
         await update.message.reply_text(
             "📚 **Got it!** Now tell me about your experience.\n\n"
             "Paste a short bio ('brag sheet') about your skills and achievements.\n\n"
-            "💡 **Keep it under 500 characters and focus on results.**",
+            "💡 **Keep it under 1500 characters and focus on results.**",
             parse_mode='Markdown'
         )
         await db_manager.set_user_state(user_id, "ONBOARDING_BIO")
@@ -206,9 +206,9 @@ class UpworkBot:
         bio = update.message.text.strip()
 
         # Validate bio
-        if len(bio) > 500:
+        if len(bio) > 1500:
             await update.message.reply_text(
-                f"❌ Bio is too long ({len(bio)}/500 characters). Please shorten it.",
+                f"❌ Bio is too long ({len(bio)}/1500 characters). Please shorten it.",
                 parse_mode='Markdown'
             )
             return ONBOARDING_BIO
@@ -363,10 +363,10 @@ class UpworkBot:
         bio = update.message.text.strip()
 
         # Validate bio
-        if len(bio) > 500:
+        if len(bio) > 1500:
             await self.safe_reply_text(
                 update,
-                f"❌ Bio is too long ({len(bio)}/500 characters). Please shorten it.\n\n"
+                f"❌ Bio is too long ({len(bio)}/1500 characters). Please shorten it.\n\n"
                 "Try again:",
                 parse_mode='Markdown'
             )
@@ -379,7 +379,7 @@ class UpworkBot:
         await self.safe_reply_text(
             update,
             "✅ **Bio Updated!**\n\n"
-            f"Your new bio ({len(bio)}/500 characters):\n\n"
+            f"Your new bio ({len(bio)}/1500 characters):\n\n"
             f"_{bio[:200]}{'...' if len(bio) > 200 else ''}_\n\n"
             "Use /settings to update more or check your profile.",
             parse_mode='Markdown'
@@ -552,7 +552,7 @@ class UpworkBot:
                 update,
                 "📚 *Quick profile setup*\n\n"
                 "Paste a short bio about your experience.\n\n"
-                "💡 *Focus on results. Keep it under 500 characters.*",
+                "💡 *Focus on results. Keep it under 1500 characters.*",
                 parse_mode='Markdown'
             )
             await db_manager.set_user_state(user_id, "ONBOARDING_BIO")
@@ -1459,7 +1459,7 @@ class UpworkBot:
                 "`Senior Python developer with 5+ years building scalable web apps. "
                 "Led 20+ Django projects, reduced deployment time by 60%. "
                 "Expert in REST APIs, PostgreSQL, and cloud deployment.`\n\n"
-                "Your bio (keep it under 500 characters, or /cancel to cancel):",
+                "Your bio (keep it under 1500 characters, or /cancel to cancel):",
                 parse_mode='Markdown'
             )
 
@@ -1895,7 +1895,7 @@ class UpworkBot:
             f"📊 *Plan:* {sub_display}\n\n"
             f"🎯 *Keywords:* {keywords_display}\n\n"
             f"📝 *Bio:* {bio_preview}\n"
-            f"   ({bio_length}/500 characters)\n\n"
+            f"   ({bio_length}/1500 characters)\n\n"
             f"💰 *Budget Filter:* {budget_display}\n"
             f"📈 *Experience:* {exp_display}\n"
             f"🔔 *Alerts:* {pause_display}\n\n"
