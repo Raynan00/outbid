@@ -1572,10 +1572,25 @@ class UpworkBot:
                 # Not revealed - show blurred (NO AI call)
                 credits = await db_manager.get_reveal_credits(user_id)
                 
+                # Truncate description for preview (first 200 chars)
+                description_preview = ""
+                if job_data.description:
+                    desc = job_data.description.strip()
+                    if len(desc) > 200:
+                        description_preview = desc[:200].rsplit(' ', 1)[0] + "..."
+                    else:
+                        description_preview = desc
+                
                 blurred_message = (
                     f"🚨 *NEW JOB ALERT*\n\n"
                     f"*{job_data.title}*\n"
                     f"{metadata_line}\n\n"
+                )
+                
+                if description_preview:
+                    blurred_message += f"_{description_preview}_\n\n"
+                
+                blurred_message += (
                     f"*Your Custom Proposal:*\n"
                     f"░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n"
                     f"░░░░░░░░░░ BLURRED ░░░░░░░░░░░░░░░░░░░░░\n"
