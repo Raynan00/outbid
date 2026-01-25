@@ -418,7 +418,12 @@ async def payment_callback(request: Request):
                 logger.info(f"Backup grant_access for user {telegram_id}, plan: {plan}")
                 
                 # Try to auto-reveal pending job (also idempotent - clears pending on first call)
-                await auto_reveal_pending_job(telegram_id)
+                had_pending = await auto_reveal_pending_job(telegram_id)
+                
+                # Send success notification if no pending job was revealed
+                if not had_pending:
+                    success_msg = billing_service.get_success_message(plan)
+                    await send_telegram_notification(telegram_id, success_msg)
                 
             except Exception as e:
                 logger.error(f"Backup grant_access failed for user {telegram_id}: {e}")
