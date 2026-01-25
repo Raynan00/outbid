@@ -213,39 +213,102 @@ class ProposalGenerator:
 
     def _get_standard_system_prompt(self) -> str:
         """Get the system prompt for standard proposal generation."""
-        return """You are an expert Upwork freelancer. Write a professional cover letter that will be pasted directly into Upwork.
+        return """You are an expert Upwork freelancer who consistently gets replies and interviews.
 
-CRITICAL OUTPUT RULES:
-1. OUTPUT ONLY THE COVER LETTER TEXT - No explanations, no meta-commentary, no "Here's a cover letter..." or "I saw your need..." introductions.
-2. START DIRECTLY with the cover letter content - Begin with a strong opening that addresses the client's specific needs.
-3. NO APOLOGIES OR QUALIFICATIONS - Don't say "While my skills might seem unrelated" or "Although I'm primarily experienced in..." - be confident and direct.
-4. BE CONCISE: 150-300 words maximum. Every sentence must add value.
+Your goal is NOT to sound impressive.
+Your goal is to get the client to reply.
 
-STRUCTURE:
-- Opening: Direct hook addressing their specific problem/need
-- Body: Highlight relevant experience and skills from user's background (be specific, not generic)
-- Address screening questions if the job mentions any
-- Closing: Clear call-to-action (e.g., "I'm available to start immediately" or "Let's discuss how I can help")
+CORE RULES (NON-NEGOTIABLE):
 
-TONE: Professional, confident, results-focused. Write as if you're already the right person for the job.
+1. OPEN STRONG (FIRST 1-2 SENTENCES)
+- Reference the client's specific problem, goal, or constraint from the job post.
+- Make it obvious you actually read the description.
+- Do NOT start with greetings, names, years of experience, or generic lines.
 
-OUTPUT FORMAT: Plain text cover letter only. No markdown, no bold, no formatting. Ready to copy-paste into Upwork."""
+2. SOLUTION FIRST, NOT BIO
+- Explain HOW you would approach or solve the problem.
+- Be concrete and practical.
+- Use short paragraphs or bullet points if it improves clarity.
+
+3. PROOF OF RELEVANCE
+- Mention 1-2 highly relevant experiences or results from the freelancer's background.
+- Use numbers or outcomes where possible.
+- Only include experience that directly applies to THIS job.
+
+4. TONE & STYLE
+- Natural, confident, and human.
+- No buzzwords. No corporate language.
+- Write like a real person typing on Upwork, not a sales page.
+- Optimized for mobile reading.
+
+5. LENGTH
+- 150-220 words maximum.
+- Short sentences. Easy to scan.
+
+6. CLOSE WITH A CTA
+- End with a clear next step (question, suggestion, or offer to start).
+- Make it easy for the client to reply.
+
+IMPORTANT:
+- Do NOT mention AI.
+- Do NOT use emojis.
+- Do NOT restate the entire job description.
+- Do NOT sound templated.
+
+DYNAMIC ADJUSTMENTS (CRITICAL):
+
+Adapt the proposal style based on the job type:
+
+A) TECHNICAL / DEVELOPMENT JOBS (software, scraping, automation, backend, frontend, data, APIs)
+- Emphasize tools, stack, and technical approach.
+- Mention how you would structure or implement the solution.
+- Avoid generic "I'm experienced in X" statements.
+- Show competence through HOW, not claims.
+
+B) CREATIVE / CONTENT / DESIGN JOBS (copywriting, video, design, branding, content, marketing)
+- Emphasize outcomes, clarity, and examples.
+- Mention what result the client will get (conversions, engagement, clarity).
+- Keep tone conversational and results-focused.
+
+C) LONG-TERM / ONGOING ROLES (VA, support, maintenance, retainers, monthly work)
+- Emphasize reliability, communication, and process.
+- Show you understand ongoing needs, not just one task.
+- Mention consistency, responsiveness, and long-term value.
+
+D) SHORT / FIXED TASKS (one-off jobs, quick fixes, audits, small tasks)
+- Be direct and efficient.
+- Emphasize speed, clarity, and quick turnaround.
+- Avoid over-explaining.
+
+OUTPUT REQUIREMENTS:
+- Return ONLY the proposal text.
+- No headings.
+- No bullet point symbols unless they improve clarity.
+- No extra commentary.
+- Plain text only. No markdown, no bold, no formatting."""
 
     def _get_strategy_system_prompt(self) -> str:
-        """Get the system prompt for strategy mode proposal generation."""
-        return """You are an expert Upwork freelancer. Write a strategic cover letter based on the user's specific instructions.
+        """Get the system prompt for strategy mode (War Room) proposal generation."""
+        return """You are rewriting an Upwork proposal with additional strategic guidance.
 
-CRITICAL OUTPUT RULES:
-1. OUTPUT ONLY THE COVER LETTER TEXT - No explanations, no meta-commentary, no "Here's..." or "I'll rewrite..." introductions.
-2. START DIRECTLY with the cover letter content.
-3. FOLLOW THE USER'S STRATEGY EXACTLY - They know their market better than anyone.
-4. If given an original proposal, rewrite it strategically (don't just add to it).
-5. BE CONCISE: 150-300 words maximum.
-6. BE CONFIDENT - No apologies, no qualifications, no "while my skills might seem..."
+TASK:
+- Rewrite the proposal to incorporate the user's strategy notes.
+- Apply the same tone, clarity, and job-type awareness as the original.
+- Do NOT increase length unnecessarily.
+- Keep it natural and client-focused.
 
-TONE: Professional, confident, results-focused. Implement the requested strategy (pricing, positioning, timeline, etc.) directly.
+RULES:
+- No fluff.
+- No buzzwords.
+- No emojis.
+- End with a clear call to action.
+- 150-220 words maximum.
+- Follow the user's strategy EXACTLY - they know their market.
 
-OUTPUT FORMAT: Plain text cover letter only. No markdown, no formatting. Ready to copy-paste into Upwork."""
+OUTPUT:
+- Return ONLY the rewritten proposal.
+- No explanations, no commentary, no "Here's the rewritten..." intro.
+- Plain text only. No markdown, no formatting."""
 
     def _build_job_prompt(self, job_data: Dict[str, Any], user_context: Dict[str, Any]) -> str:
         """Build the user prompt with job details and user context."""
@@ -253,6 +316,7 @@ OUTPUT FORMAT: Plain text cover letter only. No markdown, no formatting. Ready t
         description = job_data.get('description', '')
         tags = job_data.get('tags', [])
         budget = job_data.get('budget', 'Not specified')
+        experience_level = job_data.get('experience_level', 'Not specified')
         user_keywords = user_context.get('keywords', '')
         user_bio = user_context.get('context', '')
 
@@ -264,52 +328,41 @@ OUTPUT FORMAT: Plain text cover letter only. No markdown, no formatting. Ready t
         if len(description) > 2000:
             description = description[:2000] + "..."
 
-        prompt = f"""JOB DETAILS:
-Title: {title}
-Description: {description}
-Skills Required: {', '.join(tags) if tags else 'Not specified'}
-Budget: {budget}
+        prompt = f"""CONTEXT:
+- Job Title: {title}
+- Job Description: {description}
+- Budget: {budget}
+- Client Experience Level: {experience_level}
+- Skills Required: {', '.join(tags) if tags else 'Not specified'}
+- Freelancer Skills: {user_keywords}
+- Freelancer Bio (Brag Sheet): {user_bio}
 
-USER BACKGROUND:
-Keywords/Skills: {user_keywords}
-Bio/Experience: {user_bio}
-
-Write a professional cover letter for this Upwork job. The output will be pasted directly into Upwork's proposal field.
-
-REQUIREMENTS:
-- Write ONLY the cover letter text (no explanations or introductions)
-- Start directly with the cover letter content
-- Use the user's background to show relevant experience
-- Be confident and direct - don't apologize or qualify your skills
-- Keep it 150-300 words
-- End with a clear call-to-action
-
-Output the cover letter text only, ready to copy-paste."""
+TASK:
+Write a concise, high-conversion Upwork proposal tailored specifically to this job.
+Output the proposal text only, ready to copy-paste."""
 
         return prompt
 
     def _build_strategy_prompt(self, job_data: Dict[str, Any], user_context: Dict[str, Any], strategy_input: str, original_proposal: str = "") -> str:
-        """Build the strategy prompt for interactive customization."""
+        """Build the strategy prompt for War Room interactive customization."""
         title = job_data.get('title', 'Unknown Title')
-        user_keywords = user_context.get('keywords', '')
-        user_bio = user_context.get('context', '')
+        description = job_data.get('description', '')
+        
+        # Truncate description if too long
+        if len(description) > 1000:
+            description = description[:1000] + "..."
 
-        prompt = f"""JOB: {title}
-USER SKILLS: {user_keywords}
-USER BACKGROUND: {user_bio}
+        prompt = f"""ORIGINAL PROPOSAL:
+{original_proposal if original_proposal else '(No original proposal - create new one)'}
 
-STRATEGY INSTRUCTION: {strategy_input}
+JOB CONTEXT:
+{title}
+{description}
 
-"""
+USER STRATEGY NOTES:
+{strategy_input}
 
-        if original_proposal:
-            prompt += f"""ORIGINAL PROPOSAL TO MODIFY:
-{original_proposal}
-
-Rewrite this proposal following the strategy instruction above. Focus on the specific tactical approach requested."""
-
-        else:
-            prompt += """Create a new strategic proposal following the strategy instruction above. Make it tactical and competitive."""
+Rewrite the proposal incorporating the user's strategy notes. Return ONLY the rewritten proposal."""
 
         return prompt
 
