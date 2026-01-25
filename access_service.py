@@ -42,43 +42,29 @@ class AccessService:
     
     async def detect_user_country(self, telegram_id: int, update: Update = None) -> str:
         """
-        Auto-detect user country using multiple methods.
+        Get user's country from database.
         
-        Detection order:
-        1. Check DB (if already set)
-        2. Check Telegram phone number prefix (+234 = Nigeria) - most reliable
-        3. Check language_code fallback (e.g., "en-NG", "yo", "ig", "ha" = Nigeria)
-        4. Default to 'GLOBAL'
+        NOTE: Reliable country detection happens via IP on /setup/{telegram_id} endpoint.
+        This method just checks the DB or returns GLOBAL as default.
         
         Returns: 'NG' or 'GLOBAL'
         """
-        # 1. Check existing DB value
+        # Check existing DB value
         user_info = await db_manager.get_user_info(telegram_id)
         if user_info and user_info.get('country_code'):
             return user_info['country_code']
         
-        # 2. Check phone number first (most reliable)
-        if update and update.effective_user:
-            phone = getattr(update.effective_user, 'phone_number', None)
-            if phone:
-                if phone.startswith('+234') or phone.startswith('234'):
-                    await db_manager.update_user_country(telegram_id, 'NG')
-                    logger.info(f"Detected Nigeria (NG) for user {telegram_id} via phone number")
-                    return 'NG'
-        
-        # 3. Fallback: Check language_code
+        # Weak fallback: Check language_code (rarely helps, but cheap to check)
         if update and update.effective_user:
             lang_code = (getattr(update.effective_user, 'language_code', None) or '').lower()
             if lang_code:
-                # Nigerian language codes
+                # Nigerian language codes (Yoruba, Igbo, Hausa)
                 if 'ng' in lang_code or lang_code in ['yo', 'ig', 'ha']:
                     await db_manager.update_user_country(telegram_id, 'NG')
                     logger.info(f"Detected Nigeria (NG) for user {telegram_id} via language_code: {lang_code}")
                     return 'NG'
         
-        # 4. Default to GLOBAL
-        await db_manager.update_user_country(telegram_id, 'GLOBAL')
-        logger.info(f"Defaulted to GLOBAL for user {telegram_id}")
+        # Default to GLOBAL - proper detection happens via /setup endpoint
         return 'GLOBAL'
     
     async def detect_country_from_ip(self, ip_address: str) -> str:

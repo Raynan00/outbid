@@ -76,6 +76,9 @@ class Config:
     # Webhook server (for payment confirmations)
     WEBHOOK_SERVER_PORT: int = int(os.getenv('WEBHOOK_SERVER_PORT', '5000'))
     WEBHOOK_BASE_URL: str = os.getenv('WEBHOOK_BASE_URL', 'https://your-server.com')  # Your public URL
+    
+    # Telegram Bot Username (for deep links)
+    TELEGRAM_BOT_USERNAME: str = os.getenv('TELEGRAM_BOT_USERNAME', 'OutbidBot')  # Without @
 
     # Logging Configuration
     LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')

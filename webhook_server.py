@@ -486,6 +486,127 @@ async def detect_country(telegram_id: int, request: Request):
     }
 
 
+# ==================== ONBOARDING SETUP ENDPOINT ====================
+
+from fastapi.responses import HTMLResponse
+
+@app.get("/setup/{telegram_id}", response_class=HTMLResponse)
+async def setup_country(telegram_id: int, request: Request):
+    """
+    Onboarding setup endpoint - detects user's country from IP during /start flow.
+    
+    Flow:
+    1. User clicks "Continue Setup" button in Telegram
+    2. Opens this page which captures their IP
+    3. Detects country and saves to database
+    4. Redirects back to Telegram bot with deep link
+    """
+    from access_service import access_service
+    
+    # Get client IP
+    client_ip = request.client.host
+    
+    # Check for forwarded IP (if behind proxy/load balancer)
+    forwarded_for = request.headers.get('X-Forwarded-For')
+    if forwarded_for:
+        client_ip = forwarded_for.split(',')[0].strip()
+    
+    # Also check X-Real-IP (used by nginx)
+    real_ip = request.headers.get('X-Real-IP')
+    if real_ip:
+        client_ip = real_ip
+    
+    # Detect country from IP and save
+    country = await access_service.update_country_from_ip(telegram_id, client_ip)
+    
+    logger.info(f"Setup: Detected country {country} for user {telegram_id} from IP {client_ip}")
+    
+    # Determine pricing message based on country
+    if country == 'NG':
+        country_emoji = "🇳🇬"
+        country_name = "Nigeria"
+        pricing_note = "You'll see Naira pricing via Paystack"
+    else:
+        country_emoji = "🌍"
+        country_name = "International"
+        pricing_note = "You'll see USD pricing via Stripe"
+    
+    # Build redirect URL
+    bot_username = config.TELEGRAM_BOT_USERNAME
+    redirect_url = f"https://t.me/{bot_username}?start=setup_done"
+    
+    # Return HTML page that auto-redirects
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Outbid Setup</title>
+        <meta http-equiv="refresh" content="2;url={redirect_url}">
+        <style>
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: #fff;
+            }}
+            .container {{
+                text-align: center;
+                padding: 40px;
+                background: rgba(255, 255, 255, 0.1);
+                border-radius: 20px;
+                backdrop-filter: blur(10px);
+                max-width: 400px;
+                margin: 20px;
+            }}
+            .emoji {{ font-size: 64px; margin-bottom: 20px; }}
+            h1 {{ font-size: 24px; margin-bottom: 10px; color: #4ade80; }}
+            p {{ color: #a0aec0; margin-bottom: 20px; line-height: 1.6; }}
+            .country {{ 
+                background: rgba(74, 222, 128, 0.2); 
+                padding: 10px 20px; 
+                border-radius: 10px;
+                display: inline-block;
+                margin-bottom: 20px;
+            }}
+            .btn {{
+                display: inline-block;
+                background: #4ade80;
+                color: #1a1a2e;
+                padding: 15px 30px;
+                border-radius: 10px;
+                text-decoration: none;
+                font-weight: bold;
+                transition: transform 0.2s;
+            }}
+            .btn:hover {{ transform: scale(1.05); }}
+            .redirect-note {{ font-size: 12px; color: #718096; margin-top: 20px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="emoji">{country_emoji}</div>
+            <h1>Setup Complete!</h1>
+            <div class="country">
+                <strong>{country_name}</strong><br>
+                <small>{pricing_note}</small>
+            </div>
+            <p>Click below to return to Telegram and continue setting up your job alerts.</p>
+            <a href="{redirect_url}" class="btn">🚀 Return to Bot</a>
+            <p class="redirect-note">Redirecting automatically in 2 seconds...</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
+
+
 # ==================== MAIN ====================
 
 if __name__ == "__main__":
