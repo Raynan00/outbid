@@ -139,6 +139,7 @@ class BillingService:
         # Generate unique reference
         reference = f"outbid_{telegram_id}_{plan}_{int(datetime.now().timestamp())}"
         
+        # Base payload
         payload = {
             "email": email,
             "amount": amount_kobo,
@@ -153,6 +154,12 @@ class BillingService:
                 ]
             }
         }
+        
+        # For monthly plan with card payments, use Paystack Plan for auto-renewal
+        # Note: This only works with card payments, not bank transfers
+        if plan == 'monthly' and config.PAYSTACK_PLAN_CODE_MONTHLY:
+            payload["plan"] = config.PAYSTACK_PLAN_CODE_MONTHLY
+            logger.info(f"Using Paystack Plan {config.PAYSTACK_PLAN_CODE_MONTHLY} for monthly subscription")
         
         headers = {
             "Authorization": f"Bearer {self.paystack_secret}",
@@ -308,7 +315,12 @@ class BillingService:
         """
         try:
             expiry = self.calculate_expiry(plan)
-            is_auto_renewal = (payment_provider == 'stripe' and plan == 'monthly')
+            # Auto-renewal for monthly subscriptions on Stripe or Paystack (with plan code)
+            is_auto_renewal = (
+                plan == 'monthly' and 
+                (payment_provider == 'stripe' or 
+                 (payment_provider == 'paystack' and config.PAYSTACK_PLAN_CODE_MONTHLY))
+            )
             
             await db_manager.grant_subscription(
                 telegram_id=telegram_id,

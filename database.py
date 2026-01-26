@@ -890,6 +890,19 @@ class DatabaseManager:
             await db.commit()
             logger.info(f"Updated email for user {telegram_id}")
 
+    async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Get user info by email address (for Paystack subscription lookups)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                'SELECT telegram_id, email, subscription_plan FROM users WHERE email = ?',
+                (email,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+
     async def grant_subscription(self, telegram_id: int, plan: str, expiry: datetime, 
                                   payment_provider: str, is_auto_renewal: bool = False) -> None:
         """Grant subscription to user after payment confirmation."""

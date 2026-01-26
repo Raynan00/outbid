@@ -75,6 +75,10 @@ class Config:
     NG_PRICE_MONTHLY: int = int(os.getenv('NG_PRICE_MONTHLY', '4999'))   # ₦4,999
     GLOBAL_PRICE_MONTHLY_USD: float = float(os.getenv('GLOBAL_PRICE_MONTHLY_USD', '9.99'))  # $9.99/month
     
+    # Paystack Plan Code for monthly subscriptions (auto-renewal)
+    # Create this in Paystack Dashboard: Payments > Plans > Create Plan
+    PAYSTACK_PLAN_CODE_MONTHLY: str = os.getenv('PAYSTACK_PLAN_CODE_MONTHLY', '')  # e.g., PLN_xxxxx
+    
     # Webhook server (for payment confirmations)
     WEBHOOK_SERVER_PORT: int = int(os.getenv('WEBHOOK_SERVER_PORT', '5000'))
     WEBHOOK_BASE_URL: str = os.getenv('WEBHOOK_BASE_URL', 'https://your-server.com')  # Your public URL

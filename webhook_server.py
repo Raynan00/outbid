@@ -142,7 +142,9 @@ async def handle_paystack_webhook(
     Handle Paystack webhook events.
     
     Events handled:
-    - charge.success: Payment completed successfully
+    - charge.success: Payment completed (initial or renewal)
+    - subscription.create: Subscription created
+    - subscription.disable: Subscription cancelled
     """
     try:
         # Get raw payload
@@ -180,6 +182,10 @@ async def handle_paystack_webhook(
             
             telegram_id = int(telegram_id)
             
+            # Check if this is a subscription renewal
+            subscription_code = tx_data.get('subscription', {}).get('subscription_code') if tx_data.get('subscription') else None
+            is_renewal = subscription_code is not None and tx_data.get('subscription', {}).get('status') == 'active'
+            
             # Grant access
             success = await billing_service.grant_access(
                 telegram_id=telegram_id,
@@ -193,14 +199,67 @@ async def handle_paystack_webhook(
                 
                 # Send success notification (only if no pending job was revealed)
                 if not had_pending:
-                    success_msg = billing_service.get_success_message(plan)
+                    if is_renewal:
+                        success_msg = (
+                            "🔄 *Subscription Renewed!*\n\n"
+                            "Your monthly subscription has been automatically renewed.\n\n"
+                            "Continue enjoying unlimited access! 🚀"
+                        )
+                    else:
+                        success_msg = billing_service.get_success_message(plan)
                     await send_telegram_notification(telegram_id, success_msg)
                 
-                logger.info(f"Granted {plan} subscription to user {telegram_id} via Paystack")
+                action = "Renewed" if is_renewal else "Granted"
+                logger.info(f"{action} {plan} subscription to user {telegram_id} via Paystack")
                 return JSONResponse({"status": "success"})
             else:
                 logger.error(f"Failed to grant access to user {telegram_id}")
                 return JSONResponse({"status": "error", "message": "Failed to grant access"})
+        
+        elif event == 'subscription.create':
+            # Subscription created - log for tracking
+            sub_data = data.get('data', {})
+            customer = sub_data.get('customer', {})
+            email = customer.get('email')
+            plan_data = sub_data.get('plan', {})
+            plan_name = plan_data.get('name')
+            logger.info(f"Paystack subscription created for {email}, plan: {plan_name}")
+            return JSONResponse({"status": "ok"})
+        
+        elif event == 'subscription.disable':
+            # Subscription cancelled - downgrade user
+            sub_data = data.get('data', {})
+            
+            # Try to get telegram_id from subscription metadata
+            # Note: Paystack doesn't always include metadata in subscription events
+            # So we may need to look up by email
+            customer = sub_data.get('customer', {})
+            email = customer.get('email')
+            
+            # Try to find user by email in our database
+            telegram_id = None
+            if email:
+                user_info = await db_manager.get_user_by_email(email)
+                if user_info:
+                    telegram_id = user_info.get('telegram_id')
+            
+            if telegram_id:
+                # Downgrade to scout
+                await db_manager.downgrade_to_scout(telegram_id)
+                
+                # Notify user
+                await send_telegram_notification(
+                    telegram_id,
+                    "⏰ *Subscription Cancelled*\n\n"
+                    "Your monthly subscription has been cancelled.\n"
+                    "You'll continue to have access until your current period ends.\n\n"
+                    "Use /upgrade to subscribe again anytime!"
+                )
+                logger.info(f"Cancelled subscription for user {telegram_id} (email: {email})")
+            else:
+                logger.warning(f"Could not find user for cancelled subscription, email: {email}")
+            
+            return JSONResponse({"status": "ok"})
         
         # Acknowledge other events
         return JSONResponse({"status": "ok"})
