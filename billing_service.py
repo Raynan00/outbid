@@ -155,15 +155,12 @@ class BillingService:
             }
         }
         
-        # For monthly plan, prioritize card payments for auto-renewal
+        # For monthly plan, show card first but allow all payment methods
+        # Note: Paystack Plans (auto-renewal) only work with card, so we skip it
+        # to allow users flexibility in payment method. Manual renewal reminders instead.
         if plan == 'monthly':
             # Card first = default selection, but other options still available
             payload["channels"] = ["card", "bank_transfer", "ussd", "bank"]
-            
-            # Use Paystack Plan for auto-renewal (only works with card)
-            if config.PAYSTACK_PLAN_CODE_MONTHLY:
-                payload["plan"] = config.PAYSTACK_PLAN_CODE_MONTHLY
-                logger.info(f"Using Paystack Plan {config.PAYSTACK_PLAN_CODE_MONTHLY} for monthly subscription")
         
         headers = {
             "Authorization": f"Bearer {self.paystack_secret}",
@@ -319,12 +316,8 @@ class BillingService:
         """
         try:
             expiry = self.calculate_expiry(plan)
-            # Auto-renewal for monthly subscriptions on Stripe or Paystack (with plan code)
-            is_auto_renewal = (
-                plan == 'monthly' and 
-                (payment_provider == 'stripe' or 
-                 (payment_provider == 'paystack' and config.PAYSTACK_PLAN_CODE_MONTHLY))
-            )
+            # Auto-renewal only for Stripe monthly (Paystack uses manual renewal)
+            is_auto_renewal = (payment_provider == 'stripe' and plan == 'monthly')
             
             await db_manager.grant_subscription(
                 telegram_id=telegram_id,
