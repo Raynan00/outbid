@@ -59,12 +59,16 @@ async def main():
     scanner_task = asyncio.create_task(scanner.start_scanning())
     logger.info("Scanner background task started")
 
-    # 5. Start Bot Polling
+    # 5. Start Expiry Reminder Loop (Background Task)
+    reminder_task = asyncio.create_task(bot.run_expiry_reminder_loop())
+    logger.info("Expiry reminder loop started")
+
+    # 7. Start Bot Polling
     await bot.application.start()
     await bot.application.updater.start_polling()
     logger.info("Telegram polling started")
 
-    # 6. Keep Alive / Wait for Shutdown
+    # 8. Keep Alive / Wait for Shutdown
     stop_event = asyncio.Future()
 
     def stop_signal_handler():
@@ -85,7 +89,7 @@ async def main():
     # Wait here forever until a signal is received
     await stop_event
 
-    # 7. Graceful Shutdown
+    # 9. Graceful Shutdown
     logger.info("Shutting down...")
     
     # Stop scanner

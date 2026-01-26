@@ -587,11 +587,46 @@ async def payment_success(request: Request):
 
 @app.get("/payment/cancel")
 async def payment_cancel():
-    """Handle payment cancellation."""
-    return JSONResponse({
-        "status": "cancelled",
-        "message": "Payment cancelled. Return to Telegram and use /upgrade to try again."
-    })
+    """Handle payment cancellation - redirect user back to Telegram."""
+    bot_username = config.TELEGRAM_BOT_USERNAME
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Payment Cancelled</title>
+        <meta http-equiv="refresh" content="2;url=https://t.me/{bot_username}">
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                margin: 0;
+                background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+                color: white;
+                text-align: center;
+            }}
+            .container {{
+                padding: 40px;
+            }}
+            h1 {{ font-size: 48px; margin-bottom: 20px; }}
+            p {{ font-size: 18px; opacity: 0.8; }}
+            a {{ color: #4ecdc4; text-decoration: none; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>❌</h1>
+            <h2>Payment Cancelled</h2>
+            <p>No worries! Use /upgrade in the bot to try again.</p>
+            <p><a href="https://t.me/{bot_username}">← Back to Outbid</a></p>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 # ==================== HEALTH CHECK ====================

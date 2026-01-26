@@ -2325,5 +2325,79 @@ class UpworkBot:
         except Exception as e:
             logger.error(f"Failed to send error notification: {e}")
 
+    async def send_expiry_reminders(self) -> int:
+        """
+        Send expiry reminders to users whose subscriptions are expiring soon.
+        Returns number of reminders sent.
+        """
+        sent_count = 0
+        
+        # Get users expiring in next 24 hours (who haven't been reminded today)
+        expiring_users = await db_manager.get_users_with_expiring_subscriptions(hours=24)
+        
+        for user in expiring_users:
+            telegram_id = user.get('telegram_id')
+            plan = user.get('subscription_plan')
+            expiry_str = user.get('subscription_expiry')
+            
+            try:
+                # Parse expiry to get remaining time
+                from datetime import datetime
+                expiry = datetime.fromisoformat(expiry_str)
+                remaining = expiry - datetime.now()
+                hours_left = int(remaining.total_seconds() / 3600)
+                
+                if hours_left <= 0:
+                    continue  # Already expired, will be handled by auto-downgrade
+                
+                # Customize message based on time remaining
+                if hours_left <= 3:
+                    urgency = "⚠️ *EXPIRING SOON*"
+                    time_msg = f"less than {hours_left + 1} hours"
+                elif hours_left <= 12:
+                    urgency = "⏰ *Expiring Today*"
+                    time_msg = f"about {hours_left} hours"
+                else:
+                    urgency = "📅 *Subscription Reminder*"
+                    time_msg = f"about {hours_left} hours"
+                
+                keyboard = [[InlineKeyboardButton("🔄 Renew Now", callback_data="upgrade")]]
+                
+                await self.application.bot.send_message(
+                    chat_id=telegram_id,
+                    text=f"{urgency}\n\n"
+                         f"Your subscription expires in {time_msg}.\n\n"
+                         f"Renew now to keep receiving job alerts and AI proposals!",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                sent_count += 1
+                logger.info(f"Sent expiry reminder to user {telegram_id} ({hours_left}h remaining)")
+                
+            except Exception as e:
+                logger.error(f"Failed to send expiry reminder to {telegram_id}: {e}")
+        
+        return sent_count
+
+    async def run_expiry_reminder_loop(self):
+        """Background task to check and send expiry reminders every hour."""
+        logger.info("Expiry reminder loop started")
+        
+        while True:
+            try:
+                # Wait 1 hour between checks
+                await asyncio.sleep(3600)  # 1 hour
+                
+                sent = await self.send_expiry_reminders()
+                if sent > 0:
+                    logger.info(f"Sent {sent} expiry reminders")
+                    
+            except asyncio.CancelledError:
+                logger.info("Expiry reminder loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in expiry reminder loop: {e}")
+                await asyncio.sleep(60)  # Wait a bit before retrying
+
 # Global bot instance
 bot = UpworkBot()
