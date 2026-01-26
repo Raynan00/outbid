@@ -156,8 +156,7 @@ class BillingService:
         }
         
         # For monthly plan, show card first but allow all payment methods
-        # Note: Paystack Plans (auto-renewal) only work with card, so we skip it
-        # to allow users flexibility in payment method. Manual renewal reminders instead.
+        # Auto-renewal subscription is created AFTER payment if they used card
         if plan == 'monthly':
             # Card first = default selection, but other options still available
             payload["channels"] = ["card", "bank_transfer", "ussd", "bank"]
@@ -246,6 +245,57 @@ class BillingService:
         ).hexdigest()
         
         return hmac.compare_digest(expected_signature, signature)
+    
+    async def create_paystack_subscription(self, customer_code: str, plan: str) -> Tuple[bool, str]:
+        """
+        Create a Paystack subscription for a customer after successful card payment.
+        This enables auto-renewal for monthly subscribers who paid with card.
+        
+        Args:
+            customer_code: Paystack customer code (CUS_xxx)
+            plan: 'monthly' (only monthly supports subscription)
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        if plan != 'monthly' or not config.PAYSTACK_PLAN_CODE_MONTHLY:
+            return False, "Subscription only available for monthly plan with plan code configured"
+        
+        if not self.paystack_secret:
+            return False, "Paystack not configured"
+        
+        headers = {
+            "Authorization": f"Bearer {self.paystack_secret}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "customer": customer_code,
+            "plan": config.PAYSTACK_PLAN_CODE_MONTHLY
+        }
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.paystack_base_url}/subscription",
+                    json=payload,
+                    headers=headers,
+                    timeout=30
+                ) as resp:
+                    data = await resp.json()
+                    
+                    if resp.status == 200 and data.get('status'):
+                        sub_code = data.get('data', {}).get('subscription_code')
+                        logger.info(f"Created Paystack subscription {sub_code} for customer {customer_code}")
+                        return True, f"Subscription created: {sub_code}"
+                    else:
+                        error_msg = data.get('message', 'Failed to create subscription')
+                        logger.error(f"Paystack subscription error: {error_msg}")
+                        return False, error_msg
+                        
+        except Exception as e:
+            logger.error(f"Paystack subscription request failed: {e}")
+            return False, str(e)
     
     # ==================== STRIPE (GLOBAL) ====================
     

@@ -186,6 +186,11 @@ async def handle_paystack_webhook(
             subscription_code = tx_data.get('subscription', {}).get('subscription_code') if tx_data.get('subscription') else None
             is_renewal = subscription_code is not None and tx_data.get('subscription', {}).get('status') == 'active'
             
+            # Check if paid with card (for auto-renewal eligibility)
+            channel = tx_data.get('channel', '')
+            customer_code = tx_data.get('customer', {}).get('customer_code')
+            paid_with_card = channel == 'card'
+            
             # Grant access
             success = await billing_service.grant_access(
                 telegram_id=telegram_id,
@@ -194,6 +199,21 @@ async def handle_paystack_webhook(
             )
             
             if success:
+                # For monthly card payments (not renewals), create subscription for auto-renewal
+                auto_renewal_created = False
+                if paid_with_card and plan == 'monthly' and not is_renewal and customer_code:
+                    sub_success, sub_msg = await billing_service.create_paystack_subscription(
+                        customer_code=customer_code,
+                        plan=plan
+                    )
+                    if sub_success:
+                        auto_renewal_created = True
+                        # Update user's auto-renewal status
+                        await db_manager.set_auto_renewal(telegram_id, True)
+                        logger.info(f"Created auto-renewal subscription for user {telegram_id}")
+                    else:
+                        logger.warning(f"Could not create subscription for user {telegram_id}: {sub_msg}")
+                
                 # Check for pending job and auto-reveal (this clears the pending job)
                 had_pending = await auto_reveal_pending_job(telegram_id)
                 
@@ -207,10 +227,12 @@ async def handle_paystack_webhook(
                         )
                     else:
                         success_msg = billing_service.get_success_message(plan)
+                        if auto_renewal_created:
+                            success_msg += "\n\n✨ _Auto-renewal enabled! Your card will be charged monthly._"
                     await send_telegram_notification(telegram_id, success_msg)
                 
                 action = "Renewed" if is_renewal else "Granted"
-                logger.info(f"{action} {plan} subscription to user {telegram_id} via Paystack")
+                logger.info(f"{action} {plan} subscription to user {telegram_id} via Paystack (card: {paid_with_card})")
                 return JSONResponse({"status": "success"})
             else:
                 logger.error(f"Failed to grant access to user {telegram_id}")

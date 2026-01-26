@@ -952,6 +952,16 @@ class DatabaseManager:
             await db.commit()
             logger.info(f"Downgraded user {telegram_id} to scout plan")
 
+    async def set_auto_renewal(self, telegram_id: int, enabled: bool) -> None:
+        """Set user's auto-renewal status."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                'UPDATE users SET is_auto_renewal = ?, updated_at = ? WHERE telegram_id = ?',
+                (1 if enabled else 0, datetime.now(), telegram_id)
+            )
+            await db.commit()
+            logger.info(f"Set auto_renewal={enabled} for user {telegram_id}")
+
     async def check_subscription_expired(self, telegram_id: int) -> bool:
         """Check if user's subscription has expired. Returns True if expired."""
         async with aiosqlite.connect(self.db_path) as db:
