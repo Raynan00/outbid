@@ -39,9 +39,11 @@ class Config:
     # Database Configuration
     DATABASE_PATH: str = os.getenv('DATABASE_PATH', 'upwork_bot.db')
 
-    # Scanner Configuration
-    SCAN_INTERVAL_SECONDS: int = int(os.getenv('SCAN_INTERVAL_SECONDS', '60'))
-    RETRY_DELAY_SECONDS: int = int(os.getenv('RETRY_DELAY_SECONDS', '60'))
+    # Scanner Configuration - CENTRALIZED THROTTLE
+    # Change this ONE value to control how often scans run globally
+    # Examples: 60 = 1 min, 120 = 2 min, 180 = 3 min
+    SCAN_INTERVAL_SECONDS: int = int(os.getenv('SCAN_INTERVAL_SECONDS', '120'))  # Default: 2 min
+    RETRY_DELAY_SECONDS: int = int(os.getenv('RETRY_DELAY_SECONDS', '120'))  # Match scan interval
 
     # OpenAI Configuration
     OPENAI_MODEL: str = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')

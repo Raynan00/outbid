@@ -1641,90 +1641,120 @@ class UpworkScanner:
 
     def _scan_jobs_blocking(self):
         """
-        Scan Strategy (Priority Order):
-        1. Solverify + curl_cffi (CHEAPEST: $0.0002/solve, most reliable)
-        2. Bypass Server with round-robin (FREE but needs Docker)
-        3. BrightData as paid fallback
+        Scan Strategy (Simplified - Fail Fast):
+        1. BrightData (PRIMARY - single attempt, no retries)
+        2. Bypass Server (FALLBACK - single attempt)
+        
+        If both fail, just wait for next scan interval.
+        Scan interval controlled by SCAN_INTERVAL_SECONDS in config.
         """
-        logger.info("=== Starting Scan ===")
+        logger.info(f"=== Starting Scan (interval: {config.SCAN_INTERVAL_SECONDS}s) ===")
 
-        # --- Method 1: Solverify (CHEAPEST & MOST RELIABLE) ---
-        if config.SOLVERIFY_ENABLED:
-            try:
-                html = self._get_html_with_solverify(config.UPWORK_SEARCH_URL)
-                if html:
-                    # Dump for debugging
-                    with open("debug_solverify_html.html", "w", encoding="utf-8") as f:
-                        f.write(html)
-                    
-                    # Check if we got past Cloudflare
-                    html_lower = html.lower()
-                    is_challenge = (
-                        "<title>challenge" in html_lower or
-                        "just a moment" in html_lower or
-                        "checking your browser" in html_lower
-                    )
-                    
-                    if not is_challenge:
-                        logger.info("SUCCESS! Solverify returned valid HTML!")
-                        return self._parse_jobs_from_html(html)
-                    else:
-                        logger.warning("Solverify returned Cloudflare challenge page")
-            except Exception as e:
-                logger.error(f"Solverify error: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-
-        # --- Method 2: Bypass Server (maintains internal browser session) ---
-        if config.CLOUDFLARE_BYPASS_ENABLED:
-            try:
-                logger.info("=== Attempting Cloudflare Bypass Server (10 retries) ===")
-                html = self._get_html_from_bypass_server(config.UPWORK_SEARCH_URL)
-                if html:
-                    # Dump for debugging
-                    with open("debug_bypass_html.html", "w", encoding="utf-8") as f:
-                        f.write(html)
-                    
-                    # Check if we got past Cloudflare
-                    html_lower = html.lower()
-                    is_challenge = (
-                        "<title>challenge" in html_lower or
-                        "just a moment" in html_lower or
-                        "verify you are human" in html_lower or
-                        "checking your browser" in html_lower
-                    )
-                    
-                    if not is_challenge:
-                        logger.info("SUCCESS! Bypass Server returned valid HTML!")
-                        return self._parse_jobs_from_html(html)
-                    else:
-                        logger.warning("Bypass server returned Cloudflare challenge page")
-                else:
-                    logger.warning("Bypass server returned no HTML")
-            except Exception as e:
-                logger.error(f"Bypass Server error: {e}")
-                import traceback
-                logger.debug(traceback.format_exc())
-
-        # --- Method 2: BrightData Unlocker (Paid Fallback) ---
+        # --- Method 1: BrightData (PRIMARY - single attempt, no retries) ---
         if config.BRIGHTDATA_UNLOCKER_ENABLED:
             try:
-                logger.info("=== Attempting BrightData Unlocker ===")
-                result = self._get_html_from_brightdata(config.UPWORK_SEARCH_URL)
-                if result and isinstance(result, tuple) and len(result) == 3:
-                    html_body, _, _ = result
-                    if html_body and len(html_body) > 1000:
+                logger.info("Trying BrightData (primary)...")
+                result = self._get_html_from_brightdata_simple(config.UPWORK_SEARCH_URL)
+                if result:
+                    html_body = result
+                    if self._is_valid_html(html_body):
                         logger.info(f"SUCCESS! BrightData returned {len(html_body)} chars")
                         return self._parse_jobs_from_html(html_body)
                     else:
-                        logger.warning("BrightData returned empty or small response")
+                        logger.warning("BrightData returned challenge page, trying fallback...")
             except Exception as e:
-                logger.error(f"BrightData error: {e}")
+                logger.warning(f"BrightData failed: {e}")
 
-        # No methods worked
-        logger.error("ALL SCRAPING METHODS FAILED. Check your configuration.")
-        logger.error("Ensure CLOUDFLARE_BYPASS_ENABLED=true and Docker container is running on port 8001")
+        # --- Method 2: Bypass Server (FALLBACK - single attempt) ---
+        if config.CLOUDFLARE_BYPASS_ENABLED:
+            try:
+                logger.info("Trying Bypass Server (fallback)...")
+                html = self._get_html_from_bypass_simple(config.UPWORK_SEARCH_URL)
+                if html and self._is_valid_html(html):
+                    logger.info(f"SUCCESS! Bypass Server returned {len(html)} chars")
+                    return self._parse_jobs_from_html(html)
+                else:
+                    logger.warning("Bypass server failed or returned challenge")
+            except Exception as e:
+                logger.warning(f"Bypass Server failed: {e}")
+
+        # Both methods failed - fail fast, try again next interval
+        logger.warning(f"Scan failed. Will retry in {config.SCAN_INTERVAL_SECONDS}s")
         return []
+    
+    def _is_valid_html(self, html: str) -> bool:
+        """Check if HTML is valid (not a Cloudflare challenge page)."""
+        if not html or len(html) < 1000:
+            return False
+        html_lower = html.lower()
+        challenge_markers = [
+            "<title>challenge",
+            "just a moment",
+            "verify you are human",
+            "checking your browser"
+        ]
+        return not any(marker in html_lower for marker in challenge_markers)
+    
+    def _get_html_from_brightdata_simple(self, url: str) -> Optional[str]:
+        """
+        Get HTML from BrightData - single attempt, no retries.
+        Fail fast approach.
+        """
+        if not config.BRIGHTDATA_UNLOCKER_API_KEY:
+            return None
+        
+        try:
+            unlocker_url = "https://api.brightdata.com/request"
+            headers = {
+                'Authorization': f'Bearer {config.BRIGHTDATA_UNLOCKER_API_KEY}',
+                'Content-Type': 'application/json'
+            }
+            payload = {
+                'zone': config.BRIGHTDATA_UNLOCKER_ZONE,
+                'url': url,
+                'format': 'raw'
+            }
+            
+            response = requests.post(unlocker_url, json=payload, headers=headers, timeout=60)
+            
+            if response.status_code == 200:
+                # Try to parse as JSON first
+                try:
+                    data = response.json()
+                    if 'body' in data:
+                        return data['body']
+                except:
+                    pass
+                # Fallback to raw text
+                if len(response.text) > 1000:
+                    return response.text
+            
+            logger.warning(f"BrightData status {response.status_code}")
+            return None
+            
+        except Exception as e:
+            logger.warning(f"BrightData request failed: {e}")
+            return None
+    
+    def _get_html_from_bypass_simple(self, url: str) -> Optional[str]:
+        """
+        Get HTML from bypass server - single attempt with round-robin.
+        Fail fast approach.
+        """
+        bypass_url = self._get_next_bypass_url()
+        
+        try:
+            params = {'url': url, 'retries': 1}  # Minimal retries
+            response = requests.get(f"{bypass_url}/html", params=params, timeout=60)
+            
+            if response.status_code == 200 and len(response.text) > 1000:
+                return response.text
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Bypass server {bypass_url} failed: {e}")
+            return None
 
     def _parse_jobs_from_html(self, html_content: str) -> List[Dict]:
         """Shared parsing logic for both Browser and BrightData HTML"""
