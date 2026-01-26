@@ -1715,7 +1715,7 @@ class UpworkScanner:
                 'format': 'raw'
             }
             
-            response = requests.post(unlocker_url, json=payload, headers=headers, timeout=60)
+            response = requests.post(unlocker_url, json=payload, headers=headers, timeout=120)
             
             if response.status_code == 200:
                 # Try to parse as JSON first
