@@ -141,6 +141,7 @@ class UpworkBot:
         self.application.add_handler(CommandHandler("country", self.country_command))
         self.application.add_handler(CommandHandler("admin", self.admin_command))
         self.application.add_handler(CommandHandler("admin_users", self.admin_users_command))
+        self.application.add_handler(CommandHandler("users", self.admin_users_command))  # Alias
         self.application.add_handler(CommandHandler("user", self.user_detail_command))
         self.application.add_handler(CommandHandler("admin_drafts", self.admin_drafts_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
