@@ -1664,6 +1664,7 @@ class UpworkBot:
                 [InlineKeyboardButton("⏸️ Pause 8 hours", callback_data="pause_8")],
                 [InlineKeyboardButton("😴 Pause 12 hours", callback_data="pause_12")],
                 [InlineKeyboardButton("🌙 Pause 24 hours", callback_data="pause_24")],
+                [InlineKeyboardButton("🔇 Pause Indefinitely", callback_data="pause_forever")],
                 [InlineKeyboardButton("▶️ Resume Alerts", callback_data="pause_off")],
                 [InlineKeyboardButton("Cancel", callback_data="cancel_settings")]
             ]
@@ -1671,7 +1672,7 @@ class UpworkBot:
             await query.edit_message_text(
                 text="⏸️ *Pause Alerts*\n\n"
                 "Take a break from job notifications.\n"
-                "Alerts will automatically resume when the timer ends.",
+                "Timed pauses auto-resume. Indefinite pauses stay until you unpause.",
                 parse_mode='Markdown',
                 reply_markup=reply_markup
             )
@@ -1685,6 +1686,16 @@ class UpworkBot:
                     "You'll receive job alerts again.\n"
                     "Use /settings to view all settings.",
                     parse_mode='Markdown'
+                )
+            elif pause_value == "forever":
+                await db_manager.set_user_pause_indefinite(user_id)
+                keyboard = [[InlineKeyboardButton("▶️ Unpause Now", callback_data="pause_off")]]
+                await query.edit_message_text(
+                    text="🔇 *Alerts Paused Indefinitely*\n\n"
+                    "You won't receive any job alerts until you unpause.\n\n"
+                    "Use /settings or the button below to resume.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
                 )
             else:
                 try:

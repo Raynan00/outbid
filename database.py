@@ -825,6 +825,18 @@ class DatabaseManager:
             logger.info(f"Paused alerts for user {telegram_id} until {pause_until}")
         return pause_until
 
+    async def set_user_pause_indefinite(self, telegram_id: int) -> None:
+        """Pause alerts indefinitely until manually resumed."""
+        # Use year 9999 as "indefinite" marker
+        pause_until = datetime(9999, 12, 31, 23, 59, 59)
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                'UPDATE users SET pause_start = ?, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
+                (pause_until.isoformat(), datetime.now(), telegram_id)
+            )
+            await db.commit()
+            logger.info(f"Paused alerts indefinitely for user {telegram_id}")
+
     async def clear_user_pause(self, telegram_id: int) -> None:
         """Clear user pause (resume alerts)."""
         async with aiosqlite.connect(self.db_path) as db:
@@ -853,6 +865,11 @@ class DatabaseManager:
         
         try:
             pause_until = datetime.fromisoformat(pause_until_str)
+            
+            # Check for indefinite pause (year 9999)
+            if pause_until.year >= 9999:
+                return "Paused indefinitely"
+            
             remaining = pause_until - datetime.now()
             
             if remaining.total_seconds() <= 0:
