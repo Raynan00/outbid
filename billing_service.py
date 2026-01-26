@@ -155,11 +155,15 @@ class BillingService:
             }
         }
         
-        # For monthly plan with card payments, use Paystack Plan for auto-renewal
-        # Note: This only works with card payments, not bank transfers
-        if plan == 'monthly' and config.PAYSTACK_PLAN_CODE_MONTHLY:
-            payload["plan"] = config.PAYSTACK_PLAN_CODE_MONTHLY
-            logger.info(f"Using Paystack Plan {config.PAYSTACK_PLAN_CODE_MONTHLY} for monthly subscription")
+        # For monthly plan, prioritize card payments for auto-renewal
+        if plan == 'monthly':
+            # Card first = default selection, but other options still available
+            payload["channels"] = ["card", "bank_transfer", "ussd", "bank"]
+            
+            # Use Paystack Plan for auto-renewal (only works with card)
+            if config.PAYSTACK_PLAN_CODE_MONTHLY:
+                payload["plan"] = config.PAYSTACK_PLAN_CODE_MONTHLY
+                logger.info(f"Using Paystack Plan {config.PAYSTACK_PLAN_CODE_MONTHLY} for monthly subscription")
         
         headers = {
             "Authorization": f"Bearer {self.paystack_secret}",
