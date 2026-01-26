@@ -5,6 +5,7 @@ Handles user commands, onboarding, strategy mode, and job alerts with AI-generat
 
 import asyncio
 import logging
+import aiosqlite
 from typing import List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -140,6 +141,7 @@ class UpworkBot:
         self.application.add_handler(CommandHandler("country", self.country_command))
         self.application.add_handler(CommandHandler("admin", self.admin_command))
         self.application.add_handler(CommandHandler("admin_users", self.admin_users_command))
+        self.application.add_handler(CommandHandler("user", self.user_detail_command))
         self.application.add_handler(CommandHandler("admin_drafts", self.admin_drafts_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
@@ -991,24 +993,90 @@ class UpworkBot:
                 await self.safe_reply_text(update, "No users found.")
                 return
             
-            # Format first 10 users (Telegram message limit)
-            user_list = "👥 **Users List** (showing first 10)\n\n"
-            for user in users[:10]:
-                paid_status = "✅ Paid" if user['is_paid'] else "❌ Unpaid"
+            # Format users (Telegram message limit)
+            paid_count = sum(1 for u in users if u['is_paid'])
+            scout_count = len(users) - paid_count
+            
+            user_list = f"👥 **Users** ({len(users)} total: {paid_count} paid, {scout_count} scouts)\n\n"
+            
+            for user in users[:15]:
+                paid_emoji = "✅" if user['is_paid'] else "🆓"
+                keywords = user['keywords'][:40] + "..." if len(user['keywords']) > 40 else user['keywords']
                 user_list += (
-                    f"**User {user['telegram_id']}**\n"
-                    f"   {paid_status} | Keywords: {user['keywords'][:30]}\n"
-                    f"   Budget: ${user['min_budget']}-${user['max_budget'] if user['max_budget'] < 999999 else '∞'}\n"
-                    f"   Joined: {user['created_at']}\n\n"
+                    f"{paid_emoji} `{user['telegram_id']}`\n"
+                    f"   📝 {keywords}\n\n"
                 )
             
-            if len(users) > 10:
-                user_list += f"... and {len(users) - 10} more users"
+            if len(users) > 15:
+                user_list += f"_... and {len(users) - 15} more_\n\n"
+            
+            user_list += "Use `/user <id>` for full details"
             
             await self.safe_reply_text(update, user_list, parse_mode='Markdown')
             
         except Exception as e:
             logger.error(f"Admin users command failed: {e}")
+            await self.safe_reply_text(update, f"Error: {e}")
+
+    async def user_detail_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /user <id> command - show detailed user info (admin only)."""
+        user_id = update.effective_user.id
+        
+        if not config.is_admin(user_id):
+            await self.safe_reply_text(update, "Access denied. Admin only.")
+            return
+        
+        # Get target user ID from args
+        if not context.args:
+            await self.safe_reply_text(update, "Usage: `/user <telegram_id>`", parse_mode='Markdown')
+            return
+        
+        try:
+            target_id = int(context.args[0])
+        except ValueError:
+            await self.safe_reply_text(update, "Invalid user ID. Must be a number.")
+            return
+        
+        try:
+            # Get full user info
+            info = await db_manager.get_user_info(target_id)
+            if not info:
+                await self.safe_reply_text(update, f"User {target_id} not found.")
+                return
+            
+            # Get job match stats
+            async with aiosqlite.connect(db_manager.db_path) as db:
+                cursor = await db.execute(
+                    'SELECT COUNT(*) FROM seen_jobs WHERE telegram_id = ?',
+                    (target_id,)
+                )
+                jobs_matched = (await cursor.fetchone())[0]
+            
+            # Format bio (truncate if too long)
+            bio = info.get('context') or 'Not set'
+            if len(bio) > 500:
+                bio = bio[:500] + '...'
+            
+            # Format message
+            paid_status = "✅ Paid" if info.get('is_paid') else "🆓 Scout"
+            
+            message = (
+                f"👤 **User Detail: {target_id}**\n\n"
+                f"**Status:** {paid_status}\n"
+                f"**Plan:** {info.get('subscription_plan') or 'Free'}\n"
+                f"**Country:** {info.get('country_code') or 'Unknown'}\n"
+                f"**Joined:** {info.get('created_at', 'Unknown')}\n\n"
+                f"**Keywords:**\n{info.get('keywords') or 'Not set'}\n\n"
+                f"**Bio:**\n_{bio}_\n\n"
+                f"**Budget:** ${info.get('min_budget', 0)} - ${info.get('max_budget', 999999) if info.get('max_budget', 999999) < 999999 else '∞'}\n"
+                f"**Experience:** {info.get('experience_levels') or 'All'}\n\n"
+                f"📊 **Jobs Matched:** {jobs_matched}"
+            )
+            
+            await self.safe_reply_text(update, message, parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"User detail command failed: {e}")
             await self.safe_reply_text(update, f"Error: {e}")
 
     async def admin_drafts_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
