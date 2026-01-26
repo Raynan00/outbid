@@ -6,6 +6,7 @@ Handles user commands, onboarding, strategy mode, and job alerts with AI-generat
 import asyncio
 import logging
 import aiosqlite
+import re
 from typing import List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -29,6 +30,41 @@ logger = logging.getLogger(__name__)
 
 # Conversation states for onboarding, strategy, and settings
 ONBOARDING_KEYWORDS, ONBOARDING_BIO, STRATEGIZING, UPDATE_KEYWORDS, UPDATE_BIO, AWAITING_EMAIL = range(6)
+
+
+def normalize_keywords(raw_input: str) -> str:
+    """
+    Normalize keyword input to comma-separated format.
+    Handles: commas, 'and', newlines, semicolons, pipes.
+    
+    Examples:
+        "python and django and api" -> "python, django, api"
+        "python, django, api" -> "python, django, api"
+        "python\ndjango\napi" -> "python, django, api"
+        "python; django; api" -> "python, django, api"
+    """
+    # Replace common separators with commas
+    text = raw_input.strip()
+    
+    # Replace " and " (with spaces) -> comma
+    text = re.sub(r'\s+and\s+', ', ', text, flags=re.IGNORECASE)
+    
+    # Replace newlines, semicolons, pipes -> comma
+    text = re.sub(r'[\n\r;|]+', ', ', text)
+    
+    # Split by comma, clean up each keyword
+    keywords = [kw.strip() for kw in text.split(',') if kw.strip()]
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_keywords = []
+    for kw in keywords:
+        kw_lower = kw.lower()
+        if kw_lower not in seen:
+            seen.add(kw_lower)
+            unique_keywords.append(kw)
+    
+    return ', '.join(unique_keywords)
 
 class UpworkBot:
     """Telegram bot for Upwork job monitoring and alerts."""
@@ -179,19 +215,26 @@ class UpworkBot:
     async def handle_keywords_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle keywords input during onboarding."""
         user_id = update.effective_user.id
-        keywords = update.message.text.strip()
+        raw_keywords = update.message.text.strip()
+        
+        # Normalize keywords (handles "and", newlines, etc.)
+        keywords = normalize_keywords(raw_keywords)
 
         # Validate keywords
-        if len(keywords.split(',')) < 1 or len(keywords) > 200:
+        keyword_list = [k.strip() for k in keywords.split(',') if k.strip()]
+        if len(keyword_list) < 1 or len(keywords) > 300:
             await update.message.reply_text(
-                "❌ Please enter 1-10 keywords separated by commas (max 200 characters).\n\n"
-                "Example: `Python, Django, API, Backend`",
+                "❌ Please enter at least 1 keyword (max 300 characters total).\n\n"
+                "You can use commas, 'and', or new lines:\n"
+                "• `Python, Django, API`\n"
+                "• `Python and Django and API`",
                 parse_mode='Markdown'
             )
             return ONBOARDING_KEYWORDS
 
         # Save keywords
         await db_manager.update_user_onboarding(user_id, keywords=keywords)
+        logger.info(f"User {user_id} keywords normalized: '{raw_keywords}' -> '{keywords}'")
 
         # Move to bio collection
         await update.message.reply_text(
@@ -334,14 +377,20 @@ class UpworkBot:
     async def handle_update_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle keywords update from settings."""
         user_id = update.effective_user.id
-        keywords = update.message.text.strip()
+        raw_keywords = update.message.text.strip()
+        
+        # Normalize keywords (handles "and", newlines, etc.)
+        keywords = normalize_keywords(raw_keywords)
 
         # Validate keywords
-        if len(keywords.split(',')) < 1 or len(keywords) > 200:
+        keyword_list = [k.strip() for k in keywords.split(',') if k.strip()]
+        if len(keyword_list) < 1 or len(keywords) > 300:
             await self.safe_reply_text(
                 update,
-                "❌ Please enter 1-10 keywords separated by commas (max 200 characters).\n\n"
-                "Example: `Python, Django, API, Backend`\n\n"
+                "❌ Please enter at least 1 keyword (max 300 characters).\n\n"
+                "You can use commas, 'and', or new lines:\n"
+                "• `Python, Django, API`\n"
+                "• `Python and Django and API`\n\n"
                 "Try again:",
                 parse_mode='Markdown'
             )
@@ -350,6 +399,7 @@ class UpworkBot:
         # Update keywords
         await db_manager.update_user_onboarding(user_id, keywords=keywords)
         await db_manager.clear_user_state(user_id)
+        logger.info(f"User {user_id} keywords updated: '{raw_keywords}' -> '{keywords}'")
 
         await self.safe_reply_text(
             update,
