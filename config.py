@@ -106,7 +106,7 @@ class Config:
     _bypass_urls_raw: str = os.getenv('CLOUDFLARE_BYPASS_URLS', os.getenv('CLOUDFLARE_BYPASS_URL', 'http://localhost:8001'))
     CLOUDFLARE_BYPASS_URLS: List[str] = [url.strip() for url in _bypass_urls_raw.split(',') if url.strip()]
     CLOUDFLARE_BYPASS_URL: str = CLOUDFLARE_BYPASS_URLS[0] if CLOUDFLARE_BYPASS_URLS else 'http://localhost:8001'  # Backwards compatibility
-    CLOUDFLARE_BYPASS_ENABLED: bool = os.getenv('CLOUDFLARE_BYPASS_ENABLED', 'true').lower() == 'true'
+    CLOUDFLARE_BYPASS_ENABLED: bool = os.getenv('CLOUDFLARE_BYPASS_ENABLED', 'false').lower() == 'true'  # Off by default, BrightData only
     
     # BrightData Unlocker API Configuration
     BRIGHTDATA_UNLOCKER_API_KEY: str = os.getenv('BRIGHTDATA_UNLOCKER_API_KEY', '')
