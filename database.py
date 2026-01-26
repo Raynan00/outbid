@@ -165,6 +165,20 @@ class DatabaseManager:
             # Create indexes for better performance
             await db.execute('CREATE INDEX IF NOT EXISTS idx_seen_jobs_timestamp ON seen_jobs(timestamp)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_users_paid ON users(is_paid)')
+            
+            # Track alerts sent to users
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS alerts_sent (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    alert_type TEXT DEFAULT 'proposal'
+                )
+            ''')
+            await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_job ON alerts_sent(job_id)')
+            await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_user ON alerts_sent(user_id)')
+            await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_time ON alerts_sent(sent_at)')
 
             await db.commit()
             logger.info("Database initialized successfully")
@@ -216,6 +230,44 @@ class DatabaseManager:
             await db.commit()
             logger.info(f"Cleaned up {deleted_count} old job records")
             return deleted_count
+
+    # Alert Tracking Operations
+    async def record_alert_sent(self, job_id: str, user_id: int, alert_type: str = 'proposal') -> None:
+        """Record that an alert was sent to a user."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                'INSERT INTO alerts_sent (job_id, user_id, alert_type) VALUES (?, ?, ?)',
+                (job_id, user_id, alert_type)
+            )
+            await db.commit()
+
+    async def get_alerts_stats(self) -> Dict[str, Any]:
+        """Get alert statistics."""
+        async with aiosqlite.connect(self.db_path) as db:
+            stats = {}
+            
+            # Total alerts ever sent
+            cursor = await db.execute('SELECT COUNT(*) FROM alerts_sent')
+            stats['total_alerts'] = (await cursor.fetchone())[0]
+            
+            # Unique jobs sent (at least one user got it)
+            cursor = await db.execute('SELECT COUNT(DISTINCT job_id) FROM alerts_sent')
+            stats['unique_jobs_sent'] = (await cursor.fetchone())[0]
+            
+            # Alerts in last 24h
+            cursor = await db.execute('''
+                SELECT COUNT(*) FROM alerts_sent 
+                WHERE sent_at > datetime('now', '-24 hours')
+            ''')
+            stats['alerts_24h'] = (await cursor.fetchone())[0]
+            
+            # By type
+            cursor = await db.execute('''
+                SELECT alert_type, COUNT(*) FROM alerts_sent GROUP BY alert_type
+            ''')
+            stats['by_type'] = {row[0]: row[1] for row in await cursor.fetchall()}
+            
+            return stats
 
     # User Management Operations
     async def add_user(self, telegram_id: int, is_paid: bool = False) -> None:

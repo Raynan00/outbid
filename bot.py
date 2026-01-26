@@ -952,25 +952,32 @@ class UpworkBot:
         try:
             # Get database statistics
             stats = await db_manager.get_database_stats()
+            alert_stats = await db_manager.get_alerts_stats()
+            
+            # Format alerts by type
+            alerts_by_type = alert_stats.get('by_type', {})
+            proposal_alerts = alerts_by_type.get('proposal', 0)
+            scout_alerts = alerts_by_type.get('scout', 0)
             
             stats_msg = (
                 "📊 **Database Statistics**\n\n"
                 f"👥 **Users:**\n"
                 f"   • Total: {stats['total_users']}\n"
                 f"   • Paid: {stats['paid_users']}\n"
-                f"   • Unpaid: {stats['unpaid_users']}\n"
+                f"   • Scouts: {stats['unpaid_users']}\n"
                 f"   • With Keywords: {stats['users_with_keywords']}\n"
                 f"   • New (7 days): {stats['new_users_7d']}\n\n"
                 f"💼 **Jobs:**\n"
-                f"   • Total Seen: {stats['total_jobs_seen']}\n"
-                f"   • Stored: {stats['jobs_stored']}\n"
+                f"   • Seen: {stats['total_jobs_seen']}\n"
+                f"   • Sent: {alert_stats['unique_jobs_sent']}\n"
                 f"   • Last 24h: {stats['jobs_last_24h']}\n\n"
-                f"📝 **Proposals:**\n"
-                f"   • Total Draft Records: {stats['total_proposal_drafts']}\n"
-                f"   • Regular Drafts: {stats['total_regular_drafts']}\n"
-                f"   • Strategy Drafts: {stats['total_strategy_drafts']}\n\n"
-                f"💡 Use /admin_users to see user list\n"
-                f"💡 Use /admin_drafts to see draft activity"
+                f"📤 **Alerts Sent:**\n"
+                f"   • Total: {alert_stats['total_alerts']}\n"
+                f"   • Last 24h: {alert_stats['alerts_24h']}\n"
+                f"   • Proposals: {proposal_alerts}\n"
+                f"   • Scout (blurred): {scout_alerts}\n\n"
+                f"💡 /users - user list\n"
+                f"💡 /user <id> - user details"
             )
             
             await self.safe_reply_text(update, stats_msg, parse_mode='Markdown')
@@ -2170,12 +2177,16 @@ class UpworkBot:
                 """Send a prepared alert message"""
                 try:
                     user_id = alert_data['user_id']
+                    alert_type = alert_data['type']
                     
-                    if alert_data['type'] == 'scout':
+                    if alert_type == 'scout':
                         # Scout user - use send_job_alert which has blurring logic (NO AI call)
-                        return await self.send_job_alert(user_id, job_data)
+                        result = await self.send_job_alert(user_id, job_data)
+                        if result:
+                            await db_manager.record_alert_sent(job_data.id, user_id, 'scout')
+                        return result
                     
-                    elif alert_data['type'] == 'limit':
+                    elif alert_type == 'limit':
                         # Send limit message
                         limit_message = (
                             f"NEW JOB ALERT\n\n{job_data.title}\n\n"
@@ -2195,6 +2206,7 @@ class UpworkBot:
                             reply_markup=InlineKeyboardMarkup(keyboard),
                             disable_web_page_preview=True
                         )
+                        await db_manager.record_alert_sent(job_data.id, user_id, 'limit')
                     else:
                         # Send proposal message (paid user)
                         keyboard = [
@@ -2208,6 +2220,7 @@ class UpworkBot:
                             reply_markup=InlineKeyboardMarkup(keyboard),
                             disable_web_page_preview=True
                         )
+                        await db_manager.record_alert_sent(job_data.id, user_id, 'proposal')
                     
                     return True
                 except Exception as e:
