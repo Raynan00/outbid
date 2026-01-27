@@ -96,6 +96,8 @@ class UpworkBot:
     def __init__(self):
         self.proposal_generator = ProposalGenerator()
         self.application = None
+        # Track pending onboarding nudge tasks (user_id -> asyncio.Task)
+        self._onboarding_nudge_tasks: Dict[int, asyncio.Task] = {}
 
     async def safe_reply_text(self, update: Update, text: str, parse_mode: str = None, max_retries: int = 3):
         """Safely send a reply with retry logic for timeouts."""
@@ -121,6 +123,50 @@ class UpworkBot:
                         logger.error(f"Failed to send message ({error_type}): {e}")
                     return False
         return False
+
+    async def _schedule_onboarding_nudge(self, user_id: int, delay_minutes: int = 15):
+        """Schedule a nudge message for users who don't complete onboarding."""
+        # Cancel any existing nudge for this user
+        self._cancel_onboarding_nudge(user_id)
+        
+        async def send_nudge():
+            await asyncio.sleep(delay_minutes * 60)  # Convert to seconds
+            
+            try:
+                # Check if user still hasn't completed onboarding
+                user_info = await db_manager.get_user_info(user_id)
+                if not user_info or not user_info.get('keywords'):
+                    # User hasn't set keywords - send nudge
+                    keyboard = [
+                        [InlineKeyboardButton(KEYWORD_QUICK_PICKS["developer"]["label"], callback_data="quickpick_developer")],
+                        [InlineKeyboardButton(KEYWORD_QUICK_PICKS["designer"]["label"], callback_data="quickpick_designer")],
+                        [InlineKeyboardButton("✏️ Custom keywords", callback_data="quickpick_custom")]
+                    ]
+                    await self.application.bot.send_message(
+                        chat_id=user_id,
+                        text="👋 *Quick heads up* — once you add keywords, the bot starts watching automatically.\n\n"
+                             "Takes ~10 seconds. Pick a category or type your own:",
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                    logger.info(f"Sent onboarding nudge to user {user_id}")
+            except Exception as e:
+                logger.debug(f"Could not send nudge to {user_id}: {e}")
+            finally:
+                # Clean up task reference
+                self._onboarding_nudge_tasks.pop(user_id, None)
+        
+        # Create and store the task
+        task = asyncio.create_task(send_nudge())
+        self._onboarding_nudge_tasks[user_id] = task
+        logger.debug(f"Scheduled onboarding nudge for user {user_id} in {delay_minutes} minutes")
+    
+    def _cancel_onboarding_nudge(self, user_id: int):
+        """Cancel any pending onboarding nudge for a user."""
+        task = self._onboarding_nudge_tasks.pop(user_id, None)
+        if task and not task.done():
+            task.cancel()
+            logger.debug(f"Cancelled onboarding nudge for user {user_id}")
 
     async def setup_application(self) -> Application:
         """Setup the Telegram bot application."""
@@ -256,6 +302,9 @@ class UpworkBot:
             )
             return ONBOARDING_KEYWORDS
 
+        # Cancel any pending nudge since user is completing onboarding
+        self._cancel_onboarding_nudge(user_id)
+        
         # Save keywords
         await db_manager.update_user_onboarding(user_id, keywords=keywords)
         logger.info(f"User {user_id} keywords normalized: '{raw_keywords}' -> '{keywords}'")
@@ -643,6 +692,10 @@ class UpworkBot:
                 reply_markup=InlineKeyboardMarkup(keyboard)
             )
             await db_manager.set_user_state(user_id, "ONBOARDING_KEYWORDS")
+            
+            # Schedule a nudge if they don't complete onboarding in 15 minutes
+            await self._schedule_onboarding_nudge(user_id, delay_minutes=15)
+            
             return ONBOARDING_KEYWORDS
 
         if not user_info.get('context'):
@@ -1355,6 +1408,9 @@ class UpworkBot:
                 # Auto-expand keywords from quick pick
                 keywords = KEYWORD_QUICK_PICKS[pick_type]["keywords"]
                 label = KEYWORD_QUICK_PICKS[pick_type]["label"]
+                
+                # Cancel any pending nudge since user is completing onboarding
+                self._cancel_onboarding_nudge(user_id)
                 
                 # Save keywords
                 await db_manager.update_user_onboarding(user_id, keywords=keywords)
