@@ -31,6 +31,30 @@ logger = logging.getLogger(__name__)
 # Conversation states for onboarding, strategy, and settings
 ONBOARDING_KEYWORDS, ONBOARDING_BIO, STRATEGIZING, UPDATE_KEYWORDS, UPDATE_BIO, AWAITING_EMAIL = range(6)
 
+# Quick-pick keyword categories with auto-expanded keywords
+KEYWORD_QUICK_PICKS = {
+    "developer": {
+        "label": "💻 Web / Software Developer",
+        "keywords": "React, JavaScript, Frontend, Backend, API, Node, Python, Django, SaaS"
+    },
+    "designer": {
+        "label": "🎨 Designer", 
+        "keywords": "UI/UX, Figma, Web design, Mobile design, Product design"
+    },
+    "writer": {
+        "label": "✍️ Writer / Copywriter",
+        "keywords": "Copywriting, Content writing, SEO writing, Blog posts, Landing pages"
+    },
+    "video": {
+        "label": "🎥 Video Editor",
+        "keywords": "Video editing, Premiere Pro, After Effects, YouTube editing, Motion graphics"
+    },
+    "marketing": {
+        "label": "📣 Marketing / Ads",
+        "keywords": "Digital marketing, Facebook ads, Google ads, Social media, Growth marketing"
+    }
+}
+
 
 def normalize_keywords(raw_input: str) -> str:
     """
@@ -236,11 +260,28 @@ class UpworkBot:
         await db_manager.update_user_onboarding(user_id, keywords=keywords)
         logger.info(f"User {user_id} keywords normalized: '{raw_keywords}' -> '{keywords}'")
 
-        # Move to bio collection
+        # Show confirmation (instant payoff)
         await update.message.reply_text(
-            "📚 **Got it!** Now tell me about your experience.\n\n"
-            "Paste a short bio ('brag sheet') about your skills and achievements.\n\n"
-            "💡 **Keep it under 1500 characters and focus on results.**",
+            f"✅ *Tracking jobs for:* {keywords}\n\n"
+            "I'll alert you as soon as something new drops.",
+            parse_mode='Markdown'
+        )
+        
+        # Send education tip
+        await update.message.reply_text(
+            "💡 *Tip:* You're not limited to one word.\n"
+            "Add multiple keywords or phrases, like:\n"
+            "`React, Tailwind, SaaS dashboard`\n\n"
+            "Use /settings anytime to refine this.",
+            parse_mode='Markdown'
+        )
+
+        # Move to bio collection
+        await asyncio.sleep(0.5)  # Brief pause
+        await update.message.reply_text(
+            "📚 *Quick profile setup*\n\n"
+            "Paste a short bio about your experience.\n\n"
+            "💡 *Focus on results. Keep it under 1500 characters.*",
             parse_mode='Markdown'
         )
         await db_manager.set_user_state(user_id, "ONBOARDING_BIO")
@@ -585,16 +626,21 @@ class UpworkBot:
 
         # Check onboarding status - ALL users (scout or paid) need to complete onboarding
         if not user_info or not user_info.get('keywords'):
-            # Need keywords - go straight to keywords input
+            # Need keywords - show quick-pick buttons
+            keyboard = [
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["developer"]["label"], callback_data="quickpick_developer")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["designer"]["label"], callback_data="quickpick_designer")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["writer"]["label"], callback_data="quickpick_writer")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["video"]["label"], callback_data="quickpick_video")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["marketing"]["label"], callback_data="quickpick_marketing")],
+                [InlineKeyboardButton("✏️ Custom keywords", callback_data="quickpick_custom")]
+            ]
             await self.safe_reply_text(
                 update,
-                "🎯 *Let's set up your job alerts!*\n\n"
-                "📝 *Enter your skills/technologies (comma separated):*\n\n"
-                "*Examples:*\n"
-                "• `Python, Django, API, Backend`\n"
-                "• `Copywriting, Content Marketing, SEO`\n"
-                "• `Video Editing, Premiere Pro, YouTube`",
-                parse_mode='Markdown'
+                "🎯 *What kind of jobs should I watch for?*\n\n"
+                "You can change this anytime.",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             await db_manager.set_user_state(user_id, "ONBOARDING_KEYWORDS")
             return ONBOARDING_KEYWORDS
@@ -1289,6 +1335,59 @@ class UpworkBot:
                 parse_mode='Markdown'
             )
             return
+        
+        # Quick-pick keyword selection during onboarding
+        elif query.data.startswith("quickpick_"):
+            pick_type = query.data.replace("quickpick_", "")
+            
+            if pick_type == "custom":
+                # User wants custom keywords - show text prompt
+                await query.edit_message_text(
+                    "✏️ *Enter your custom keywords*\n\n"
+                    "Type the skills or job types you're looking for.\n\n"
+                    "*Examples:* `React Native, Shopify, Email marketing`\n\n"
+                    "Use commas to separate multiple keywords.",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            elif pick_type in KEYWORD_QUICK_PICKS:
+                # Auto-expand keywords from quick pick
+                keywords = KEYWORD_QUICK_PICKS[pick_type]["keywords"]
+                label = KEYWORD_QUICK_PICKS[pick_type]["label"]
+                
+                # Save keywords
+                await db_manager.update_user_onboarding(user_id, keywords=keywords)
+                logger.info(f"User {user_id} selected quick-pick: {pick_type} -> '{keywords}'")
+                
+                # Show confirmation
+                await query.edit_message_text(
+                    f"✅ *Tracking jobs for:* {keywords}\n\n"
+                    "I'll alert you as soon as something new drops.",
+                    parse_mode='Markdown'
+                )
+                
+                # Send education tip (separate message)
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text="💡 *Tip:* You're not limited to one category.\n"
+                         "Add multiple keywords or phrases, like:\n"
+                         "`React, Tailwind, SaaS dashboard`\n\n"
+                         "Use /settings anytime to refine this.",
+                    parse_mode='Markdown'
+                )
+                
+                # Now ask for bio
+                await asyncio.sleep(1)  # Brief pause before next prompt
+                await self.application.bot.send_message(
+                    chat_id=user_id,
+                    text="📚 *Quick profile setup*\n\n"
+                         "Paste a short bio about your experience.\n\n"
+                         "💡 *Focus on results. Keep it under 1500 characters.*",
+                    parse_mode='Markdown'
+                )
+                await db_manager.set_user_state(user_id, "ONBOARDING_BIO")
+                return
         
         elif query.data.startswith("open_job_"):
             job_id = query.data.replace("open_job_", "")
