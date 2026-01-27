@@ -29,7 +29,7 @@ from billing_service import billing_service
 logger = logging.getLogger(__name__)
 
 # Conversation states for onboarding, strategy, and settings
-ONBOARDING_KEYWORDS, ONBOARDING_BIO, STRATEGIZING, UPDATE_KEYWORDS, UPDATE_BIO, AWAITING_EMAIL = range(6)
+ONBOARDING_KEYWORDS, ONBOARDING_BIO, STRATEGIZING, UPDATE_KEYWORDS, UPDATE_BIO, AWAITING_EMAIL, ADD_KEYWORDS = range(7)
 
 # Quick-pick keyword categories with auto-expanded keywords
 KEYWORD_QUICK_PICKS = {
@@ -215,6 +215,9 @@ class UpworkBot:
             states={
                 UPDATE_KEYWORDS: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_update_keywords)
+                ],
+                ADD_KEYWORDS: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_keywords)
                 ],
                 UPDATE_BIO: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_update_bio)
@@ -507,6 +510,76 @@ class UpworkBot:
         )
         return ConversationHandler.END
 
+    async def handle_add_keywords(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle adding new keywords (append mode)."""
+        user_id = update.effective_user.id
+        raw_keywords = update.message.text.strip()
+        
+        # Normalize new keywords
+        new_keywords = normalize_keywords(raw_keywords)
+        new_list = [k.strip() for k in new_keywords.split(',') if k.strip()]
+        
+        if len(new_list) < 1:
+            await self.safe_reply_text(
+                update,
+                "❌ Please enter at least 1 keyword.\n\n"
+                "You can use commas, 'and', or new lines:\n"
+                "• `React, Framer, SEO`\n\n"
+                "Try again:",
+                parse_mode='Markdown'
+            )
+            return ADD_KEYWORDS
+        
+        # Get existing keywords
+        user_info = await db_manager.get_user_info(user_id)
+        existing = user_info.get('keywords', '') if user_info else ''
+        existing_list = [k.strip() for k in existing.split(',') if k.strip()] if existing else []
+        
+        # Merge and deduplicate (case-insensitive dedup, preserve case of first occurrence)
+        seen = set()
+        merged = []
+        for kw in existing_list + new_list:
+            if kw.lower() not in seen:
+                seen.add(kw.lower())
+                merged.append(kw)
+        
+        combined = ', '.join(merged)
+        
+        # Check total length
+        if len(combined) > 300:
+            await self.safe_reply_text(
+                update,
+                f"❌ Too many keywords! Total exceeds 300 characters ({len(combined)}/300).\n\n"
+                "Try adding fewer keywords or use /settings → Edit keywords to replace.",
+                parse_mode='Markdown'
+            )
+            return ADD_KEYWORDS
+        
+        # Find what was actually added (new, not duplicates)
+        added = [kw for kw in new_list if kw.lower() not in {k.lower() for k in existing_list}]
+        
+        # Save
+        await db_manager.update_user_onboarding(user_id, keywords=combined)
+        await db_manager.clear_user_state(user_id)
+        logger.info(f"User {user_id} added keywords: {added}")
+        
+        if added:
+            await self.safe_reply_text(
+                update,
+                f"✅ **Added:** {', '.join(added)}\n\n"
+                f"🎯 All keywords: `{combined}`",
+                parse_mode='Markdown'
+            )
+        else:
+            await self.safe_reply_text(
+                update,
+                "ℹ️ Those keywords were already in your list.\n\n"
+                f"🎯 Your keywords: `{combined}`",
+                parse_mode='Markdown'
+            )
+        
+        return ConversationHandler.END
+
     async def handle_update_bio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle bio update from settings."""
         user_id = update.effective_user.id
@@ -548,6 +621,9 @@ class UpworkBot:
             # Route to appropriate handler based on state
             if state == "UPDATE_KEYWORDS":
                 await self.handle_update_keywords(update, context)
+                return
+            elif state == "ADD_KEYWORDS":
+                await self.handle_add_keywords(update, context)
                 return
             elif state == "UPDATE_BIO":
                 await self.handle_update_bio(update, context)
@@ -1737,16 +1813,122 @@ class UpworkBot:
             )
 
         elif query.data == "update_keywords":
-            # Enter keywords update state - set both DB and conversation handler state
-            await db_manager.set_user_state(user_id, "UPDATE_KEYWORDS")
-            context.user_data['state'] = UPDATE_KEYWORDS  # Set conversation handler state
+            # Show keywords management menu with current keywords
+            user_info = await db_manager.get_user_info(user_id)
+            current_keywords = user_info.get('keywords', '') if user_info else ''
+            keyword_list = [k.strip() for k in current_keywords.split(',') if k.strip()]
+            
+            # Format keywords as bulleted list
+            if keyword_list:
+                keywords_display = "\n".join([f"• {kw}" for kw in keyword_list])
+            else:
+                keywords_display = "• (none set)"
+            
+            keyboard = [
+                [InlineKeyboardButton("➕ Add keywords", callback_data="keywords_add")],
+                [InlineKeyboardButton("✏️ Edit keywords", callback_data="keywords_edit")],
+                [InlineKeyboardButton("❌ Remove keywords", callback_data="keywords_remove")],
+                [InlineKeyboardButton("← Back", callback_data="cancel_settings")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
             await query.edit_message_text(
-                text="✏️ **Update Keywords**\n\n"
-                "Enter your new keywords (comma separated):\n\n"
-                "📝 **Example:** `React, Framer, SEO, Python`\n\n"
-                "Type your keywords (or /cancel to cancel):",
+                text=f"🎯 **Your keywords**\n{keywords_display}\n\n"
+                "What would you like to do?",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        
+        elif query.data == "keywords_add":
+            # Add keywords mode (append)
+            await db_manager.set_user_state(user_id, "ADD_KEYWORDS")
+            context.user_data['state'] = ADD_KEYWORDS
+            await query.edit_message_text(
+                text="➕ **Add Keywords**\n\n"
+                "Send one or more keywords to add\n"
+                "(comma separated)\n\n"
+                "📝 **Example:** `Next.js, Stripe integration`\n\n"
+                "Type keywords to add (or /cancel):",
                 parse_mode='Markdown'
             )
+        
+        elif query.data == "keywords_edit":
+            # Full edit mode (replace all)
+            user_info = await db_manager.get_user_info(user_id)
+            current_keywords = user_info.get('keywords', '') if user_info else ''
+            
+            await db_manager.set_user_state(user_id, "UPDATE_KEYWORDS")
+            context.user_data['state'] = UPDATE_KEYWORDS
+            await query.edit_message_text(
+                text="✏️ **Edit Keywords**\n\n"
+                "Here are your current keywords:\n"
+                f"`{current_keywords}`\n\n"
+                "Send the full updated list to **replace** them.\n\n"
+                "Type your new keywords (or /cancel):",
+                parse_mode='Markdown'
+            )
+        
+        elif query.data == "keywords_remove":
+            # Show remove menu with each keyword as a button
+            user_info = await db_manager.get_user_info(user_id)
+            current_keywords = user_info.get('keywords', '') if user_info else ''
+            keyword_list = [k.strip() for k in current_keywords.split(',') if k.strip()]
+            
+            if not keyword_list:
+                await query.edit_message_text(
+                    text="❌ No keywords to remove.\n\n"
+                    "Use ➕ Add keywords first.",
+                    parse_mode='Markdown'
+                )
+                return
+            
+            # Create button for each keyword
+            keyboard = []
+            for i, kw in enumerate(keyword_list):
+                keyboard.append([InlineKeyboardButton(f"{kw} ❌", callback_data=f"kw_rm_{i}")])
+            keyboard.append([InlineKeyboardButton("← Back", callback_data="update_keywords")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                text="❌ **Remove Keywords**\n\n"
+                "Tap a keyword to remove it:",
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        
+        elif query.data.startswith("kw_rm_"):
+            # Remove specific keyword
+            idx = int(query.data.replace("kw_rm_", ""))
+            user_info = await db_manager.get_user_info(user_id)
+            current_keywords = user_info.get('keywords', '') if user_info else ''
+            keyword_list = [k.strip() for k in current_keywords.split(',') if k.strip()]
+            
+            if 0 <= idx < len(keyword_list):
+                removed = keyword_list.pop(idx)
+                new_keywords = ', '.join(keyword_list)
+                await db_manager.update_user_onboarding(user_id, keywords=new_keywords)
+                logger.info(f"User {user_id} removed keyword: {removed}")
+                
+                # Show updated list or success message
+                if keyword_list:
+                    keywords_display = "\n".join([f"• {kw}" for kw in keyword_list])
+                    keyboard = [
+                        [InlineKeyboardButton("Remove another", callback_data="keywords_remove")],
+                        [InlineKeyboardButton("← Done", callback_data="cancel_settings")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    await query.edit_message_text(
+                        text=f"✅ Removed: **{removed}**\n\n"
+                        f"🎯 **Your keywords**\n{keywords_display}",
+                        parse_mode='Markdown',
+                        reply_markup=reply_markup
+                    )
+                else:
+                    await query.edit_message_text(
+                        text=f"✅ Removed: **{removed}**\n\n"
+                        "⚠️ No keywords left! Use /settings to add some.",
+                        parse_mode='Markdown'
+                    )
 
         elif query.data == "update_bio":
             # Enter bio update state - set both DB and conversation handler state
@@ -2211,8 +2393,8 @@ class UpworkBot:
 
         # Create inline keyboard with update buttons
         keyboard = [
-            [InlineKeyboardButton("Update Keywords", callback_data="update_keywords")],
-            [InlineKeyboardButton("Update Bio", callback_data="update_bio")],
+            [InlineKeyboardButton("🎯 Keywords", callback_data="update_keywords")],
+            [InlineKeyboardButton("✏️ Update Bio", callback_data="update_bio")],
             [InlineKeyboardButton("Set Budget Filter", callback_data="update_budget")],
             [InlineKeyboardButton("Set Experience Filter", callback_data="update_experience")],
             [InlineKeyboardButton("⏸️ Pause Alerts", callback_data="update_pause")],
