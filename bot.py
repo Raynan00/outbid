@@ -99,12 +99,12 @@ class UpworkBot:
         # Track pending onboarding nudge tasks (user_id -> asyncio.Task)
         self._onboarding_nudge_tasks: Dict[int, asyncio.Task] = {}
 
-    async def safe_reply_text(self, update: Update, text: str, parse_mode: str = None, max_retries: int = 3):
+    async def safe_reply_text(self, update: Update, text: str, parse_mode: str = None, reply_markup=None, max_retries: int = 3):
         """Safely send a reply with retry logic for timeouts."""
         for attempt in range(max_retries):
             try:
                 # Use reply_text which is simpler and uses the configured timeouts
-                await update.message.reply_text(text, parse_mode=parse_mode)
+                await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
                 return True
             except Exception as e:
                 error_type = type(e).__name__
