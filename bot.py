@@ -623,19 +623,27 @@ class UpworkBot:
             # Refresh user info after creation
             user_info = await db_manager.get_user_info(user_id)
             
-            # Go straight to keywords onboarding (country detection happens at the end)
+            # Show quick-pick buttons for new users
+            keyboard = [
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["developer"]["label"], callback_data="quickpick_developer")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["designer"]["label"], callback_data="quickpick_designer")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["writer"]["label"], callback_data="quickpick_writer")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["video"]["label"], callback_data="quickpick_video")],
+                [InlineKeyboardButton(KEYWORD_QUICK_PICKS["marketing"]["label"], callback_data="quickpick_marketing")],
+                [InlineKeyboardButton("✏️ Custom keywords", callback_data="quickpick_custom")]
+            ]
             await self.safe_reply_text(
                 update,
-                "🎯 *Welcome to Upwork First Responder!*\n\n"
-                "I help you apply before everyone else — with AI-written proposals.\n\n"
-                "📝 *Enter your skills/technologies (comma separated):*\n\n"
-                "*Examples:*\n"
-                "• `Python, Django, API, Backend`\n"
-                "• `Copywriting, Content Marketing, SEO`\n"
-                "• `Video Editing, Premiere Pro, YouTube`",
-                parse_mode='Markdown'
+                "🎯 *What kind of jobs should I watch for?*\n\n"
+                "You can change this anytime.",
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             await db_manager.set_user_state(user_id, "ONBOARDING_KEYWORDS")
+            
+            # Schedule nudge for drop-offs
+            await self._schedule_onboarding_nudge(user_id, delay_minutes=15)
+            
             return ONBOARDING_KEYWORDS
         
         # If returning from setup (after clicking "Finish Setup" button)
