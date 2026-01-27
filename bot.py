@@ -303,8 +303,8 @@ class UpworkBot:
             await update.message.reply_text(
                 "❌ Please enter at least 1 keyword (max 300 characters total).\n\n"
                 "You can use commas, 'and', or new lines:\n"
-                "• `Python, Django, API`\n"
-                "• `Python and Django and API`",
+                "• `React, Framer, SEO, Python`\n"
+                "• `React and Framer and SEO`",
                 parse_mode='Markdown'
             )
             return ONBOARDING_KEYWORDS
@@ -486,8 +486,8 @@ class UpworkBot:
                 update,
                 "❌ Please enter at least 1 keyword (max 300 characters).\n\n"
                 "You can use commas, 'and', or new lines:\n"
-                "• `Python, Django, API`\n"
-                "• `Python and Django and API`\n\n"
+                "• `React, Framer, SEO, Python`\n"
+                "• `React and Framer and SEO`\n\n"
                 "Try again:",
                 parse_mode='Markdown'
             )
@@ -1743,7 +1743,7 @@ class UpworkBot:
             await query.edit_message_text(
                 text="✏️ **Update Keywords**\n\n"
                 "Enter your new keywords (comma separated):\n\n"
-                "📝 **Example:** `Python, Django, API, Backend, React`\n\n"
+                "📝 **Example:** `React, Framer, SEO, Python`\n\n"
                 "Type your keywords (or /cancel to cancel):",
                 parse_mode='Markdown'
             )
