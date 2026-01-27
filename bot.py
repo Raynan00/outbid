@@ -623,7 +623,15 @@ class UpworkBot:
             # Refresh user info after creation
             user_info = await db_manager.get_user_info(user_id)
             
-            # Show quick-pick buttons for new users
+            # Message 1: Quick welcome
+            await self.safe_reply_text(
+                update,
+                "👋 *Welcome to Outbid!*\n\n"
+                "I help you apply to Upwork jobs before everyone else — with AI-written proposals.",
+                parse_mode='Markdown'
+            )
+            
+            # Message 2: Quick-pick buttons (immediate)
             keyboard = [
                 [InlineKeyboardButton(KEYWORD_QUICK_PICKS["developer"]["label"], callback_data="quickpick_developer")],
                 [InlineKeyboardButton(KEYWORD_QUICK_PICKS["designer"]["label"], callback_data="quickpick_designer")],
@@ -632,8 +640,7 @@ class UpworkBot:
                 [InlineKeyboardButton(KEYWORD_QUICK_PICKS["marketing"]["label"], callback_data="quickpick_marketing")],
                 [InlineKeyboardButton("✏️ Custom keywords", callback_data="quickpick_custom")]
             ]
-            await self.safe_reply_text(
-                update,
+            await update.message.reply_text(
                 "🎯 *What kind of jobs should I watch for?*\n\n"
                 "You can change this anytime.",
                 parse_mode='Markdown',
