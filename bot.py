@@ -327,7 +327,7 @@ class UpworkBot:
         await update.message.reply_text(
             "💡 *Tip:* You're not limited to one word.\n"
             "Add multiple keywords or phrases, like:\n"
-            "`React, Tailwind, SaaS dashboard`\n\n"
+            "`React, Framer, SEO, Python`\n\n"
             "Use /settings anytime to refine this.",
             parse_mode='Markdown'
         )
@@ -1450,7 +1450,7 @@ class UpworkBot:
                     chat_id=user_id,
                     text="💡 *Tip:* You're not limited to one category.\n"
                          "Add multiple keywords or phrases, like:\n"
-                         "`React, Tailwind, SaaS dashboard`\n\n"
+                         "`React, Framer, SEO, Python`\n\n"
                          "Use /settings anytime to refine this.",
                     parse_mode='Markdown'
                 )
