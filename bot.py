@@ -285,6 +285,13 @@ class UpworkBot:
     async def handle_keywords_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Handle keywords input during onboarding."""
         user_id = update.effective_user.id
+        
+        # Check if user already completed keywords via quick-pick (state is now ONBOARDING_BIO)
+        user_info = await db_manager.get_user_info(user_id)
+        if user_info and user_info.get('state') == 'ONBOARDING_BIO':
+            # Redirect to bio handler - user already set keywords via quick-pick
+            return await self.handle_bio_input(update, context)
+        
         raw_keywords = update.message.text.strip()
         
         # Normalize keywords (handles "and", newlines, etc.)
