@@ -254,6 +254,7 @@ class UpworkBot:
         self.application.add_handler(CommandHandler("user", self.user_detail_command))
         self.application.add_handler(CommandHandler("admin_drafts", self.admin_drafts_command))
         self.application.add_handler(CommandHandler("promo", self.admin_promo_command))
+        self.application.add_handler(CommandHandler("redeem", self.redeem_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
         # Add general message handler for cost protection
@@ -1495,6 +1496,7 @@ class UpworkBot:
             "/settings - Update keywords, bio, and filters\n"
             "/status - View bot status and statistics\n"
             "/upgrade - View subscription plans\n"
+            "/redeem - Apply a promo code\n"
             "/country - Change your pricing region\n"
             "/help - Show this help message\n"
             "/cancel - Cancel current operation\n\n"
@@ -1525,6 +1527,86 @@ class UpworkBot:
         )
 
         await update.message.reply_text(help_text, parse_mode='Markdown')
+
+    async def redeem_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /redeem command - allow users to apply a promo code.
+
+        Usage: /redeem CROWNZ
+        """
+        user_id = update.effective_user.id
+
+        user_info = await db_manager.get_user_info(user_id)
+        if not user_info:
+            await self.safe_reply_text(update, "Please /start first.", parse_mode='Markdown')
+            return
+
+        args = context.args
+
+        if not args:
+            # Check if user already has a promo code
+            existing_promo = await db_manager.get_user_promo(user_id)
+            if existing_promo:
+                await self.safe_reply_text(
+                    update,
+                    f"🎁 You already have a promo code applied: `{existing_promo['code']}`\n"
+                    f"_{existing_promo['discount_percent']}% off your first monthly subscription._",
+                    parse_mode='Markdown'
+                )
+            else:
+                await self.safe_reply_text(
+                    update,
+                    "🎟️ **Redeem a Promo Code**\n\n"
+                    "Usage: `/redeem CODE`\n\n"
+                    "Example: `/redeem CROWNZ`",
+                    parse_mode='Markdown'
+                )
+            return
+
+        code = args[0].upper()
+
+        # Check if user already has a promo code
+        existing_promo = await db_manager.get_user_promo(user_id)
+        if existing_promo:
+            await self.safe_reply_text(
+                update,
+                f"❌ You already have a promo code applied: `{existing_promo['code']}`\n\n"
+                "Promo codes can only be used once per account.",
+                parse_mode='Markdown'
+            )
+            return
+
+        # Check if user is already a paid subscriber
+        subscription = await db_manager.get_subscription_status(user_id)
+        if subscription.get('plan') not in ['scout', None]:
+            await self.safe_reply_text(
+                update,
+                "❌ Promo codes are for new subscribers only.\n\n"
+                "You're already on a paid plan!",
+                parse_mode='Markdown'
+            )
+            return
+
+        # Try to apply the promo code
+        promo = await db_manager.apply_promo_code(user_id, code)
+
+        if promo:
+            await self.safe_reply_text(
+                update,
+                f"✅ **Promo code applied!**\n\n"
+                f"Code: `{promo['code']}`\n"
+                f"Discount: {promo['discount_percent']}% off\n\n"
+                f"Your discount will be applied when you upgrade to the monthly plan.\n\n"
+                f"Use /upgrade to subscribe now!",
+                parse_mode='Markdown'
+            )
+            logger.info(f"User {user_id} redeemed promo code {code}")
+        else:
+            await self.safe_reply_text(
+                update,
+                f"❌ Invalid promo code: `{code}`\n\n"
+                "Please check the code and try again.",
+                parse_mode='Markdown'
+            )
 
     async def country_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /country command - allow users to change their country/pricing region."""
