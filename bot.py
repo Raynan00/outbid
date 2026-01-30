@@ -1406,7 +1406,8 @@ class UpworkBot:
                         update,
                         "📋 **No promo codes found.**\n\n"
                         "Create one with:\n`/promo CODE DISCOUNT`\n\n"
-                        "Example: `/promo CROWNZ 20`",
+                        "Example: `/promo CROWNZ 20`\n\n"
+                        "Delete with: `/promo delete CODE`",
                         parse_mode='Markdown'
                     )
                     return
@@ -1445,7 +1446,26 @@ class UpworkBot:
                 await self.safe_reply_text(update, msg, parse_mode='Markdown')
 
             elif len(args) >= 2:
-                # Create new promo code
+                # Check for delete command: /promo delete CODE
+                if args[0].lower() == 'delete':
+                    code = args[1].upper()
+                    success = await db_manager.delete_promo_code(code)
+
+                    if success:
+                        await self.safe_reply_text(
+                            update,
+                            f"🗑️ Promo code `{code}` deleted.",
+                            parse_mode='Markdown'
+                        )
+                    else:
+                        await self.safe_reply_text(
+                            update,
+                            f"❌ Promo code `{code}` not found.",
+                            parse_mode='Markdown'
+                        )
+                    return
+
+                # Create new promo code: /promo CODE DISCOUNT
                 code = args[0].upper()
                 try:
                     discount = int(args[1])

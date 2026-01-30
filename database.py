@@ -609,6 +609,23 @@ class DatabaseManager:
             logger.error(f"Failed to create promo code {code}: {e}")
             return False
 
+    async def delete_promo_code(self, code: str) -> bool:
+        """Delete a promo code."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                cursor = await db.execute(
+                    'DELETE FROM promo_codes WHERE UPPER(code) = UPPER(?)',
+                    (code,)
+                )
+                await db.commit()
+                if cursor.rowcount > 0:
+                    logger.info(f"Deleted promo code {code.upper()}")
+                    return True
+                return False
+        except Exception as e:
+            logger.error(f"Failed to delete promo code {code}: {e}")
+            return False
+
     # Job Storage for Strategy Mode
     async def store_job_for_strategy(self, job_data: Dict[str, Any]) -> None:
         """Store job data for potential strategy mode usage."""
