@@ -180,6 +180,27 @@ class DatabaseManager:
             await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_user ON alerts_sent(user_id)')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_time ON alerts_sent(sent_at)')
 
+            # Create promo_codes table for promotional discounts
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS promo_codes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT UNIQUE NOT NULL,
+                    discount_percent INTEGER DEFAULT 20,
+                    applies_to TEXT DEFAULT 'monthly',
+                    max_uses INTEGER DEFAULT NULL,
+                    times_used INTEGER DEFAULT 0,
+                    conversions INTEGER DEFAULT 0,
+                    is_active BOOLEAN DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            await db.execute('CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)')
+
+            # Add promo_code_used column to users table
+            try:
+                await db.execute('ALTER TABLE users ADD COLUMN promo_code_used TEXT DEFAULT NULL')
+            except: pass
+
             await db.commit()
             logger.info("Database initialized successfully")
 
@@ -458,6 +479,135 @@ class DatabaseManager:
             'activated_referrals': activated_count,
             'pending_referrals': total_count - activated_count
         }
+
+    # Promo Code System
+    async def get_promo_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get promo code details if valid and active."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                '''SELECT code, discount_percent, applies_to, max_uses, times_used, is_active
+                   FROM promo_codes WHERE UPPER(code) = UPPER(?) AND is_active = 1''',
+                (code,)
+            )
+            result = await cursor.fetchone()
+
+        if not result:
+            return None
+
+        code, discount_percent, applies_to, max_uses, times_used, is_active = result
+
+        # Check if max uses exceeded
+        if max_uses is not None and times_used >= max_uses:
+            return None
+
+        return {
+            'code': code,
+            'discount_percent': discount_percent,
+            'applies_to': applies_to,
+            'max_uses': max_uses,
+            'times_used': times_used
+        }
+
+    async def apply_promo_code(self, telegram_id: int, code: str) -> Optional[Dict[str, Any]]:
+        """
+        Apply a promo code to a user. Returns promo details if successful, None otherwise.
+        Only applies if user hasn't used a promo code before.
+        """
+        # Check if user already has a promo code
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                'SELECT promo_code_used FROM users WHERE telegram_id = ?',
+                (telegram_id,)
+            )
+            result = await cursor.fetchone()
+
+            if result and result[0]:
+                return None  # User already used a promo code
+
+        # Check if promo code is valid
+        promo = await self.get_promo_code(code)
+        if not promo:
+            return None
+
+        # Apply promo code to user
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                'UPDATE users SET promo_code_used = ?, updated_at = ? WHERE telegram_id = ?',
+                (promo['code'], datetime.now(), telegram_id)
+            )
+            # Increment times_used
+            await db.execute(
+                'UPDATE promo_codes SET times_used = times_used + 1 WHERE UPPER(code) = UPPER(?)',
+                (code,)
+            )
+            await db.commit()
+
+        logger.info(f"Applied promo code {promo['code']} to user {telegram_id}")
+        return promo
+
+    async def get_user_promo(self, telegram_id: int) -> Optional[Dict[str, Any]]:
+        """Get the promo code a user has applied (if any)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                'SELECT promo_code_used FROM users WHERE telegram_id = ?',
+                (telegram_id,)
+            )
+            result = await cursor.fetchone()
+
+        if not result or not result[0]:
+            return None
+
+        return await self.get_promo_code(result[0])
+
+    async def increment_promo_conversion(self, code: str) -> None:
+        """Increment the conversion count for a promo code (when user becomes premium)."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                'UPDATE promo_codes SET conversions = conversions + 1 WHERE UPPER(code) = UPPER(?)',
+                (code,)
+            )
+            await db.commit()
+            logger.info(f"Recorded conversion for promo code {code}")
+
+    async def get_promo_stats(self, code: str) -> Optional[Dict[str, Any]]:
+        """Get statistics for a promo code."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                '''SELECT code, discount_percent, applies_to, max_uses, times_used, conversions, is_active, created_at
+                   FROM promo_codes WHERE UPPER(code) = UPPER(?)''',
+                (code,)
+            )
+            result = await cursor.fetchone()
+
+        if not result:
+            return None
+
+        return {
+            'code': result[0],
+            'discount_percent': result[1],
+            'applies_to': result[2],
+            'max_uses': result[3],
+            'times_used': result[4],
+            'conversions': result[5],
+            'is_active': bool(result[6]),
+            'created_at': result[7]
+        }
+
+    async def create_promo_code(self, code: str, discount_percent: int = 20, applies_to: str = 'monthly', max_uses: int = None) -> bool:
+        """Create a new promo code."""
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    '''INSERT INTO promo_codes (code, discount_percent, applies_to, max_uses)
+                       VALUES (?, ?, ?, ?)''',
+                    (code.upper(), discount_percent, applies_to, max_uses)
+                )
+                await db.commit()
+            logger.info(f"Created promo code {code.upper()} with {discount_percent}% discount")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create promo code {code}: {e}")
+            return False
 
     # Job Storage for Strategy Mode
     async def store_job_for_strategy(self, job_data: Dict[str, Any]) -> None:

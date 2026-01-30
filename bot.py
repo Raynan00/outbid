@@ -253,6 +253,7 @@ class UpworkBot:
         self.application.add_handler(CommandHandler("users", self.admin_users_command))  # Alias
         self.application.add_handler(CommandHandler("user", self.user_detail_command))
         self.application.add_handler(CommandHandler("admin_drafts", self.admin_drafts_command))
+        self.application.add_handler(CommandHandler("promo", self.admin_promo_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
         # Add general message handler for cost protection
@@ -696,21 +697,27 @@ class UpworkBot:
         if not user_info:
             # New user - add to database
             await db_manager.add_user(user_id, is_paid=False)
-            
-            # Referrals disabled for now
-            # if args and len(args[0]) >= 4 and args[0] != 'setup_done':
-            #     referral_success = await db_manager.process_referral(args[0], user_id)
-            #     if referral_success:
-            #         logger.info(f"Processed referral {args[0]} for new user {user_id}")
-            
+
+            # Check for promo code in start args (e.g., /start CROWNZ)
+            promo_applied = None
+            if args and len(args[0]) >= 4 and args[0] != 'setup_done':
+                promo_code = args[0].upper()
+                promo_applied = await db_manager.apply_promo_code(user_id, promo_code)
+                if promo_applied:
+                    logger.info(f"Applied promo code {promo_code} to new user {user_id}")
+
             # Refresh user info after creation
             user_info = await db_manager.get_user_info(user_id)
-            
-            # Message 1: Quick welcome
+
+            # Message 1: Quick welcome (with promo if applied)
+            welcome_msg = "👋 *Welcome to Outbid!*\n\n"
+            if promo_applied:
+                welcome_msg += f"🎁 *Promo code {promo_applied['code']} applied!*\n_{promo_applied['discount_percent']}% off your first month._\n\n"
+            welcome_msg += "I help you apply to Upwork jobs before everyone else — with AI-written proposals."
+
             await self.safe_reply_text(
                 update,
-                "👋 *Welcome to Outbid!*\n\n"
-                "I help you apply to Upwork jobs before everyone else — with AI-written proposals.",
+                welcome_msg,
                 parse_mode='Markdown'
             )
             
@@ -1368,6 +1375,106 @@ class UpworkBot:
             logger.error(f"Admin drafts command failed: {e}")
             await self.safe_reply_text(update, f"Error: {e}")
 
+    async def admin_promo_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /promo command - create and view promo codes (admin only).
+
+        Usage:
+            /promo - List all promo codes with stats
+            /promo CROWNZ - View stats for specific code
+            /promo CROWNZ 20 - Create code with 20% discount
+        """
+        user_id = update.effective_user.id
+
+        if not config.is_admin(user_id):
+            await self.safe_reply_text(update, "Access denied. Admin only.")
+            return
+
+        args = context.args
+
+        try:
+            if not args:
+                # List all promo codes - get from database directly
+                async with aiosqlite.connect(db_manager.db_path) as db:
+                    cursor = await db.execute(
+                        'SELECT code, discount_percent, times_used, conversions, is_active, created_at FROM promo_codes ORDER BY created_at DESC'
+                    )
+                    promos = await cursor.fetchall()
+
+                if not promos:
+                    await self.safe_reply_text(
+                        update,
+                        "📋 **No promo codes found.**\n\n"
+                        "Create one with:\n`/promo CODE DISCOUNT`\n\n"
+                        "Example: `/promo CROWNZ 20`",
+                        parse_mode='Markdown'
+                    )
+                    return
+
+                msg = "🎟️ **Promo Codes**\n\n"
+                for code, discount, used, conversions, active, created in promos:
+                    status = "✅" if active else "❌"
+                    msg += (
+                        f"{status} `{code}` - {discount}% off\n"
+                        f"   Used: {used} | Conversions: {conversions}\n\n"
+                    )
+
+                await self.safe_reply_text(update, msg, parse_mode='Markdown')
+
+            elif len(args) == 1:
+                # View specific promo code stats
+                code = args[0].upper()
+                stats = await db_manager.get_promo_stats(code)
+
+                if not stats:
+                    await self.safe_reply_text(update, f"Promo code `{code}` not found.", parse_mode='Markdown')
+                    return
+
+                status = "✅ Active" if stats['is_active'] else "❌ Inactive"
+                msg = (
+                    f"🎟️ **Promo Code: {stats['code']}**\n\n"
+                    f"Status: {status}\n"
+                    f"Discount: {stats['discount_percent']}%\n"
+                    f"Applies to: {stats['applies_to']}\n"
+                    f"Max uses: {stats['max_uses'] or 'Unlimited'}\n"
+                    f"Times used: {stats['times_used']}\n"
+                    f"Conversions: {stats['conversions']}\n"
+                    f"Created: {stats['created_at']}"
+                )
+
+                await self.safe_reply_text(update, msg, parse_mode='Markdown')
+
+            elif len(args) >= 2:
+                # Create new promo code
+                code = args[0].upper()
+                try:
+                    discount = int(args[1])
+                except ValueError:
+                    await self.safe_reply_text(update, "Discount must be a number (e.g., 20 for 20%)")
+                    return
+
+                if discount < 1 or discount > 100:
+                    await self.safe_reply_text(update, "Discount must be between 1 and 100")
+                    return
+
+                success = await db_manager.create_promo_code(code, discount)
+
+                if success:
+                    await self.safe_reply_text(
+                        update,
+                        f"✅ **Promo code created!**\n\n"
+                        f"Code: `{code}`\n"
+                        f"Discount: {discount}%\n"
+                        f"Applies to: monthly\n\n"
+                        f"Share link:\n`https://t.me/OutBidBot?start={code}`",
+                        parse_mode='Markdown'
+                    )
+                else:
+                    await self.safe_reply_text(update, f"Failed to create promo code. Code `{code}` may already exist.", parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"Admin promo command failed: {e}")
+            await self.safe_reply_text(update, f"Error: {e}")
+
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command."""
         user_id = update.effective_user.id
@@ -1399,7 +1506,8 @@ class UpworkBot:
                 "**Admin Commands:**\n"
                 "/admin - Database statistics\n"
                 "/admin_users - List all users\n"
-                "/admin_drafts - Proposal draft activity\n\n"
+                "/admin_drafts - Proposal draft activity\n"
+                "/promo - Manage promo codes\n\n"
             )
         
         help_text += (

@@ -108,37 +108,49 @@ class BillingService:
     # ==================== PAYSTACK (NIGERIA) ====================
     
     async def initialize_paystack_transaction(
-        self, 
-        telegram_id: int, 
-        email: str, 
+        self,
+        telegram_id: int,
+        email: str,
         plan: str,
         callback_url: str = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Initialize a Paystack transaction for Nigeria users.
-        
+
         Args:
             telegram_id: User's Telegram ID
             email: User's email address
             plan: 'daily', 'weekly', or 'monthly'
             callback_url: Optional callback URL after payment
-            
+
         Returns:
             Tuple of (authorization_url, reference) or (None, error_message)
         """
         if not self.paystack_secret:
             logger.error("Paystack secret key not configured")
             return None, "Payment system not configured"
-        
+
         if plan not in NG_PRICING:
             return None, f"Invalid plan: {plan}"
-        
+
         # Amount in Kobo (Paystack expects Kobo, not Naira)
         amount_kobo = NG_PRICING[plan] * 100
-        
-        # Generate unique reference
+
+        # Check for promo code discount
+        promo = await db_manager.get_user_promo(telegram_id)
+        is_promo_payment = False
+        if promo and plan == 'monthly' and promo.get('applies_to') in ['monthly', 'all']:
+            discount_percent = promo.get('discount_percent', 0)
+            original_amount = amount_kobo
+            amount_kobo = int(amount_kobo * (100 - discount_percent) / 100)
+            is_promo_payment = True
+            logger.info(f"Applied {discount_percent}% promo discount for user {telegram_id}: {original_amount} -> {amount_kobo} kobo")
+
+        # Generate unique reference (include promo flag for webhook processing)
         reference = f"outbid_{telegram_id}_{plan}_{int(datetime.now().timestamp())}"
-        
+        if is_promo_payment:
+            reference = f"outbid_{telegram_id}_{plan}_promo_{int(datetime.now().timestamp())}"
+
         # Base payload
         payload = {
             "email": email,
@@ -148,16 +160,18 @@ class BillingService:
             "metadata": {
                 "telegram_id": telegram_id,
                 "plan": plan,
+                "is_promo_payment": is_promo_payment,
+                "promo_code": promo.get('code') if promo else None,
                 "custom_fields": [
                     {"display_name": "Telegram ID", "variable_name": "telegram_id", "value": str(telegram_id)},
                     {"display_name": "Plan", "variable_name": "plan", "value": plan}
                 ]
             }
         }
-        
-        # For monthly plan, show card first but allow all payment methods
-        # Auto-renewal subscription is created AFTER payment if they used card
-        if plan == 'monthly':
+
+        # For monthly plan WITHOUT promo, show card first for potential subscription
+        # Promo payments are one-time only (no subscription)
+        if plan == 'monthly' and not is_promo_payment:
             # Card first = default selection, but other options still available
             payload["channels"] = ["card", "bank_transfer", "ussd", "bank"]
         
@@ -300,14 +314,14 @@ class BillingService:
     # ==================== STRIPE (GLOBAL) ====================
     
     async def create_stripe_checkout_session(
-        self, 
+        self,
         telegram_id: int,
         success_url: str = None,
         cancel_url: str = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
         Create a Stripe Checkout session for global users.
-        
+
         Returns:
             Tuple of (checkout_url, session_id) or (None, error_message)
         """
@@ -316,26 +330,64 @@ class BillingService:
         try:
             import stripe
             stripe.api_key = config.STRIPE_SECRET_KEY
-            
+
             if not config.STRIPE_SECRET_KEY or not config.STRIPE_PRICE_ID_MONTHLY:
                 return None, "Stripe not configured"
-            
-            session = stripe.checkout.Session.create(
-                mode='subscription',
-                line_items=[{
-                    'price': config.STRIPE_PRICE_ID_MONTHLY,
-                    'quantity': 1
-                }],
-                client_reference_id=str(telegram_id),
-                metadata={
-                    'telegram_id': telegram_id,
-                    'plan': 'monthly'
-                },
-                success_url=success_url or f"{config.WEBHOOK_BASE_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
-                cancel_url=cancel_url or f"{config.WEBHOOK_BASE_URL}/payment/cancel"
-            )
-            
-            logger.info(f"Stripe session created for user {telegram_id}: {session.id}")
+
+            # Check for promo code discount
+            promo = await db_manager.get_user_promo(telegram_id)
+            is_promo_payment = promo and promo.get('applies_to') in ['monthly', 'all']
+
+            if is_promo_payment:
+                # Promo payment: one-time payment with discounted amount
+                discount_percent = promo.get('discount_percent', 0)
+                # Calculate discounted amount in cents
+                original_amount_cents = int(config.GLOBAL_PRICE_MONTHLY_USD * 100)
+                discounted_amount_cents = int(original_amount_cents * (100 - discount_percent) / 100)
+
+                logger.info(f"Applied {discount_percent}% promo discount for Stripe user {telegram_id}: ${config.GLOBAL_PRICE_MONTHLY_USD} -> ${discounted_amount_cents/100}")
+
+                session = stripe.checkout.Session.create(
+                    mode='payment',  # One-time payment for promo users
+                    line_items=[{
+                        'price_data': {
+                            'currency': 'usd',
+                            'unit_amount': discounted_amount_cents,
+                            'product_data': {
+                                'name': 'Monthly Pro (First Month - Promo)',
+                                'description': f'{discount_percent}% discount applied'
+                            }
+                        },
+                        'quantity': 1
+                    }],
+                    client_reference_id=str(telegram_id),
+                    metadata={
+                        'telegram_id': telegram_id,
+                        'plan': 'monthly',
+                        'is_promo_payment': True,
+                        'promo_code': promo.get('code')
+                    },
+                    success_url=success_url or f"{config.WEBHOOK_BASE_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+                    cancel_url=cancel_url or f"{config.WEBHOOK_BASE_URL}/payment/cancel"
+                )
+            else:
+                # Regular subscription
+                session = stripe.checkout.Session.create(
+                    mode='subscription',
+                    line_items=[{
+                        'price': config.STRIPE_PRICE_ID_MONTHLY,
+                        'quantity': 1
+                    }],
+                    client_reference_id=str(telegram_id),
+                    metadata={
+                        'telegram_id': telegram_id,
+                        'plan': 'monthly'
+                    },
+                    success_url=success_url or f"{config.WEBHOOK_BASE_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+                    cancel_url=cancel_url or f"{config.WEBHOOK_BASE_URL}/payment/cancel"
+                )
+
+            logger.info(f"Stripe session created for user {telegram_id}: {session.id} (promo: {is_promo_payment})")
             return session.url, session.id
             
         except ImportError:
@@ -368,7 +420,7 @@ class BillingService:
             expiry = self.calculate_expiry(plan)
             # Auto-renewal only for Stripe monthly (Paystack uses manual renewal)
             is_auto_renewal = (payment_provider == 'stripe' and plan == 'monthly')
-            
+
             await db_manager.grant_subscription(
                 telegram_id=telegram_id,
                 plan=plan,
@@ -376,10 +428,16 @@ class BillingService:
                 payment_provider=payment_provider,
                 is_auto_renewal=is_auto_renewal
             )
-            
+
+            # Track promo conversion if user used a promo code
+            promo = await db_manager.get_user_promo(telegram_id)
+            if promo:
+                await db_manager.increment_promo_conversion(promo['code'])
+                logger.info(f"Tracked conversion for promo code {promo['code']} from user {telegram_id}")
+
             logger.info(f"Granted {plan} subscription to user {telegram_id} via {payment_provider}, expires: {expiry}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to grant access to user {telegram_id}: {e}")
             return False
