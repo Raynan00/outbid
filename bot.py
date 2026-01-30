@@ -1466,7 +1466,7 @@ class UpworkBot:
                         f"Code: `{code}`\n"
                         f"Discount: {discount}%\n"
                         f"Applies to: monthly\n\n"
-                        f"Share link:\n`https://t.me/OutBidBot?start={code}`",
+                        f"Share link:\n`https://t.me/{config.TELEGRAM_BOT_USERNAME}?start={code}`",
                         parse_mode='Markdown'
                     )
                 else:
