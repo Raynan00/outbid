@@ -444,6 +444,8 @@ Provide a brief analysis (2-3 sentences) of potential risks."""
         if posted:
             header += f"{posted}\n"
 
+        header += "⏱ Jobs get 10+ proposals in the first hour. Apply fast.\n"
+
         if tags:
             header += f"Skills: {', '.join(tags[:5])}\n"  # Limit to 5 tags
 

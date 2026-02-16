@@ -1930,13 +1930,13 @@ class UpworkBot:
                 
                 # Add credits remaining info
                 message_text += f"\n\n👁 *Reveal Credits remaining: {remaining_credits}*"
-                
+
                 # Create keyboard with job link
                 keyboard = [
                     [InlineKeyboardButton("🚀 Open Job on Upwork", url=job_data_dict['link'])]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                
+
                 # Update message with full proposal
                 await query.edit_message_text(
                     text=message_text,
@@ -1944,8 +1944,24 @@ class UpworkBot:
                     reply_markup=reply_markup,
                     disable_web_page_preview=True
                 )
-                
+
                 logger.info(f"Revealed job {job_id} for scout user {user_id}. Credits remaining: {remaining_credits}")
+
+                # Nudge when last credit is used
+                if remaining_credits == 0:
+                    try:
+                        await self.application.bot.send_message(
+                            chat_id=user_id,
+                            text=(
+                                "🔥 *That was your last free reveal.*\n\n"
+                                "The next job that matches your keywords will be blurred.\n\n"
+                                "Upgrade now so you never miss a proposal:\n"
+                                "/upgrade"
+                            ),
+                            parse_mode='Markdown'
+                        )
+                    except Exception:
+                        pass  # Non-critical, don't break the flow
                 
             except Exception as e:
                 logger.error(f"Error revealing job {job_id} for user {user_id}: {e}")
@@ -2390,20 +2406,32 @@ class UpworkBot:
                 blurred_message = (
                     f"🚨 *NEW JOB ALERT*\n\n"
                     f"*{job_data.title}*\n"
-                    f"{metadata_line}\n\n"
+                    f"{metadata_line}\n"
+                    f"⏱ _Jobs get 10+ proposals in the first hour. Apply fast._\n\n"
                 )
                 
                 if description_preview:
                     blurred_message += f"_{description_preview}_\n\n"
                 
-                blurred_message += (
-                    f"*Your Custom Proposal:*\n"
-                    f"░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n"
-                    f"░░░░░░░░░░ BLURRED ░░░░░░░░░░░░░░░░░░░░░\n"
-                    f"░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n\n"
-                    f"💎 *Unlock full proposal and job link*\n"
-                    f"Use a reveal credit or upgrade to see AI-generated proposals!"
-                )
+                if credits > 0:
+                    blurred_message += (
+                        f"*Your Custom Proposal:*\n"
+                        f"░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n"
+                        f"░░░░░░░░░░ BLURRED ░░░░░░░░░░░░░░░░░░░░░\n"
+                        f"░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n\n"
+                        f"💎 *Unlock full proposal and job link*\n"
+                        f"Use a reveal credit or upgrade to see AI-generated proposals!"
+                    )
+                else:
+                    blurred_message += (
+                        f"*Your Custom Proposal:*\n"
+                        f"░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n"
+                        f"░░░░░░░░░░ BLURRED ░░░░░░░░░░░░░░░░░░░░░\n"
+                        f"░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░\n\n"
+                        f"⚠️ *You're out of free reveals.*\n"
+                        f"You're seeing this job before other freelancers — but without the proposal.\n"
+                        f"Upgrade to unlock every job instantly."
+                    )
                 
                 # Get user's country for pricing display
                 user_info = await db_manager.get_user_info(user_id)
