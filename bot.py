@@ -1645,7 +1645,7 @@ class UpworkBot:
                 )
                 return
 
-            message_text = ' '.join(remaining_args)
+            message_text = ' '.join(remaining_args).replace('\\n', '\n')
 
             # Resolve target for display
             target_display = target.upper() if len(target) == 2 and not target.isdigit() else target
