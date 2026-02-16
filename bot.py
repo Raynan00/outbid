@@ -255,6 +255,7 @@ class UpworkBot:
         self.application.add_handler(CommandHandler("user", self.user_detail_command))
         self.application.add_handler(CommandHandler("admin_drafts", self.admin_drafts_command))
         self.application.add_handler(CommandHandler("promo", self.admin_promo_command))
+        self.application.add_handler(CommandHandler("announce", self.announce_command))
         self.application.add_handler(CommandHandler("redeem", self.redeem_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
@@ -1497,6 +1498,262 @@ class UpworkBot:
             logger.error(f"Admin promo command failed: {e}")
             await self.safe_reply_text(update, f"Error: {e}")
 
+    def _parse_schedule_time(self, flag: str, value: str) -> str:
+        """Parse scheduling flag+value into an ISO datetime string.
+
+        Supports:
+          --in 1h/2h/6h/12h/24h/48h  (relative delay)
+          --at morning/afternoon/evening  (named time slots, UTC)
+          --at 2026-02-17T09:00  (custom ISO datetime)
+        """
+        now = datetime.now()
+
+        if flag == '--in':
+            # Relative delay: parse "6h" -> 6 hours
+            value = value.lower().strip()
+            if not value.endswith('h'):
+                raise ValueError(f"Invalid delay `{value}`. Use format like `6h`.")
+            try:
+                hours = int(value[:-1])
+            except ValueError:
+                raise ValueError(f"Invalid delay `{value}`. Use format like `6h`.")
+            if hours < 1 or hours > 168:
+                raise ValueError("Delay must be between 1h and 168h (7 days).")
+            from datetime import timedelta
+            return (now + timedelta(hours=hours)).isoformat()
+
+        elif flag == '--at':
+            # Named time slots (UTC)
+            time_slots = {
+                'morning': 9,
+                'afternoon': 14,
+                'evening': 19,
+            }
+            if value.lower() in time_slots:
+                hour = time_slots[value.lower()]
+                scheduled = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+                # If the slot already passed today, schedule for tomorrow
+                if scheduled <= now:
+                    from datetime import timedelta
+                    scheduled += timedelta(days=1)
+                return scheduled.isoformat()
+            else:
+                # Try parsing as ISO datetime
+                try:
+                    datetime.fromisoformat(value)
+                    return value
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid schedule `{value}`.\n\n"
+                        "Use: `morning`, `afternoon`, `evening`, or ISO format `2026-02-17T09:00`"
+                    )
+        else:
+            raise ValueError(f"Unknown flag `{flag}`. Use `--in` or `--at`.")
+
+    async def announce_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /announce command - broadcast announcements to users (admin only)."""
+        user_id = update.effective_user.id
+
+        if not config.is_admin(user_id):
+            await self.safe_reply_text(update, "Access denied. Admin only.")
+            return
+
+        args = context.args
+
+        try:
+            if not args:
+                # Show announcement history
+                history = await db_manager.get_announcement_history()
+                if not history:
+                    await self.safe_reply_text(
+                        update,
+                        "No announcements yet.\n\n"
+                        "Send one with:\n"
+                        "`/announce <target> <message>`\n\n"
+                        "*Targets:* `all`, `paid`, `free`, country code (e.g. `NG`), or telegram\\_id\n\n"
+                        "*Schedule:*\n"
+                        "`/announce all --in 6h Message`\n"
+                        "`/announce all --at morning Message`\n"
+                        "`/announce all --at 2026-02-17T09:00 Message`\n\n"
+                        "*Cancel:* `/announce cancel <id>`",
+                        parse_mode='Markdown'
+                    )
+                    return
+
+                msg = "*Recent Announcements*\n\n"
+                for a in history:
+                    status_icon = {'pending': '[PENDING]', 'sending': '[SENDING]', 'sent': '[SENT]', 'cancelled': '[CANCELLED]'}.get(a['status'], '[?]')
+                    preview = a['message'][:60] + ('...' if len(a['message']) > 60 else '')
+                    msg += (
+                        f"{status_icon} *#{a['id']}* > `{a['target']}`\n"
+                        f"  {preview}\n"
+                        f"  Sent: {a['sent_count']} | Failed: {a['failed_count']} | Blocked: {a['blocked_count']}\n\n"
+                    )
+                await self.safe_reply_text(update, msg, parse_mode='Markdown')
+                return
+
+            # Handle cancel subcommand
+            if args[0].lower() == 'cancel':
+                if len(args) < 2 or not args[1].isdigit():
+                    await self.safe_reply_text(update, "Usage: `/announce cancel <id>`", parse_mode='Markdown')
+                    return
+                ann_id = int(args[1])
+                await db_manager.update_announcement_status(ann_id, 'cancelled')
+                await self.safe_reply_text(update, f"Announcement #{ann_id} cancelled.")
+                return
+
+            # Parse target
+            target = args[0].lower()
+            valid_targets = ['all', 'paid', 'free', 'scout']
+            if target not in valid_targets and not target.isdigit() and len(target) != 2:
+                await self.safe_reply_text(
+                    update,
+                    f"Invalid target `{target}`.\n\nValid: `all`, `paid`, `free`, country code (e.g. `NG`), or telegram\\_id",
+                    parse_mode='Markdown'
+                )
+                return
+
+            remaining_args = list(args[1:])
+
+            # Check for scheduling flags (--in or --at)
+            scheduled_at = None
+            if remaining_args and remaining_args[0] in ('--in', '--at'):
+                flag = remaining_args[0]
+                if len(remaining_args) < 3:
+                    await self.safe_reply_text(
+                        update,
+                        f"Usage: `/announce {target} {flag} <value> Your message`\n\n"
+                        "Examples:\n"
+                        "`/announce all --in 6h Message`\n"
+                        "`/announce all --at morning Message`\n"
+                        "`/announce all --at 2026-02-17T09:00 Message`",
+                        parse_mode='Markdown'
+                    )
+                    return
+                try:
+                    scheduled_at = self._parse_schedule_time(flag, remaining_args[1])
+                except ValueError as e:
+                    await self.safe_reply_text(update, str(e), parse_mode='Markdown')
+                    return
+                remaining_args = remaining_args[2:]
+
+            if not remaining_args:
+                await self.safe_reply_text(
+                    update,
+                    "Message cannot be empty.\n\nUsage: `/announce all Your message here`",
+                    parse_mode='Markdown'
+                )
+                return
+
+            message_text = ' '.join(remaining_args)
+
+            # Resolve target for display
+            target_display = target.upper() if len(target) == 2 and not target.isdigit() else target
+
+            # Get recipient count
+            recipients = await db_manager.get_users_for_announcement(target_display)
+
+            if not recipients:
+                await self.safe_reply_text(update, f"No users match target `{target_display}`.", parse_mode='Markdown')
+                return
+
+            # Create announcement record
+            ann_id = await db_manager.create_announcement(
+                message=message_text,
+                target=target_display,
+                created_by=user_id,
+                scheduled_at=scheduled_at
+            )
+
+            if scheduled_at:
+                await self.safe_reply_text(
+                    update,
+                    f"*Announcement #{ann_id} scheduled*\n\n"
+                    f"Target: `{target_display}` ({len(recipients)} users)\n"
+                    f"Scheduled: {scheduled_at}\n\n"
+                    f"Preview:\n{message_text[:200]}\n\n"
+                    f"Cancel with: `/announce cancel {ann_id}`",
+                    parse_mode='Markdown'
+                )
+            else:
+                # Send immediately
+                await self.safe_reply_text(
+                    update,
+                    f"Sending announcement #{ann_id} to {len(recipients)} users...",
+                    parse_mode='Markdown'
+                )
+
+                sent, failed, blocked = await self._send_announcement(ann_id, message_text, recipients)
+
+                await self.safe_reply_text(
+                    update,
+                    f"*Announcement #{ann_id} complete*\n\n"
+                    f"Sent: {sent}\n"
+                    f"Failed: {failed}\n"
+                    f"Blocked: {blocked}",
+                    parse_mode='Markdown'
+                )
+
+        except Exception as e:
+            logger.error(f"Announce command failed: {e}")
+            await self.safe_reply_text(update, f"Error: {e}")
+
+    async def _send_announcement(self, announcement_id: int, message: str,
+                                  recipient_ids: list) -> tuple:
+        """Send announcement to a list of users with rate limiting.
+
+        Sends in batches of 25 with 1s sleep between batches (under 30/sec Telegram limit).
+        Returns (sent_count, failed_count, blocked_count) tuple.
+        """
+        from telegram.error import Forbidden
+
+        sent = 0
+        failed = 0
+        blocked = 0
+
+        BATCH_SIZE = 25
+
+        for i in range(0, len(recipient_ids), BATCH_SIZE):
+            batch = recipient_ids[i:i + BATCH_SIZE]
+
+            async def send_one(chat_id: int):
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=chat_id,
+                        text=message,
+                        parse_mode='Markdown',
+                        disable_web_page_preview=True
+                    )
+                    return 'sent'
+                except Forbidden:
+                    logger.info(f"User {chat_id} blocked the bot (announcement)")
+                    return 'blocked'
+                except Exception as e:
+                    logger.error(f"Failed to send announcement to {chat_id}: {e}")
+                    return 'failed'
+
+            results = await asyncio.gather(*[send_one(uid) for uid in batch])
+
+            for r in results:
+                if r == 'sent':
+                    sent += 1
+                elif r == 'blocked':
+                    blocked += 1
+                else:
+                    failed += 1
+
+            # Rate limit: wait 1 second between batches
+            if i + BATCH_SIZE < len(recipient_ids):
+                await asyncio.sleep(1)
+
+        # Update announcement record
+        await db_manager.update_announcement_status(
+            announcement_id, 'sent', sent, failed, blocked
+        )
+
+        logger.info(f"Announcement #{announcement_id} complete: {sent} sent, {failed} failed, {blocked} blocked")
+        return sent, failed, blocked
+
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /help command."""
         user_id = update.effective_user.id
@@ -1530,7 +1787,8 @@ class UpworkBot:
                 "/admin - Database statistics\n"
                 "/admin_users - List all users\n"
                 "/admin_drafts - Proposal draft activity\n"
-                "/promo - Manage promo codes\n\n"
+                "/promo - Manage promo codes\n"
+                "/announce - Broadcast announcements\n\n"
             )
         
         help_text += (
@@ -3023,6 +3281,47 @@ class UpworkBot:
             except Exception as e:
                 logger.error(f"Error in expiry reminder loop: {e}")
                 await asyncio.sleep(60)  # Wait a bit before retrying
+
+    async def run_announcement_scheduler_loop(self):
+        """Background task to check for and send scheduled announcements every 60 seconds."""
+        logger.info("Announcement scheduler loop started")
+
+        while True:
+            try:
+                await asyncio.sleep(60)  # Check every minute
+
+                pending = await db_manager.get_pending_announcements()
+                for ann in pending:
+                    try:
+                        recipients = await db_manager.get_users_for_announcement(ann['target'])
+                        if recipients:
+                            await db_manager.update_announcement_status(ann['id'], 'sending')
+                            sent, failed, blocked = await self._send_announcement(
+                                ann['id'], ann['message'], recipients
+                            )
+                            logger.info(f"Scheduled announcement #{ann['id']} sent: {sent}/{len(recipients)}")
+
+                            # Notify the admin who created it
+                            try:
+                                await self.application.bot.send_message(
+                                    chat_id=ann['created_by'],
+                                    text=f"*Scheduled announcement #{ann['id']} sent*\n\n"
+                                         f"Sent: {sent} | Failed: {failed} | Blocked: {blocked}",
+                                    parse_mode='Markdown'
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            await db_manager.update_announcement_status(ann['id'], 'sent', 0, 0, 0)
+                    except Exception as e:
+                        logger.error(f"Failed to send scheduled announcement #{ann['id']}: {e}")
+
+            except asyncio.CancelledError:
+                logger.info("Announcement scheduler loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in announcement scheduler loop: {e}")
+                await asyncio.sleep(60)
 
 # Global bot instance
 bot = UpworkBot()

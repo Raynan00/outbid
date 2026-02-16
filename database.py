@@ -231,6 +231,23 @@ class DatabaseManager:
             ''')
             await db.execute('CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)')
 
+            # Create announcements table
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS announcements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    message TEXT NOT NULL,
+                    target TEXT NOT NULL DEFAULT 'all',
+                    scheduled_at TEXT DEFAULT NULL,
+                    sent_at TEXT DEFAULT NULL,
+                    status TEXT DEFAULT 'pending',
+                    sent_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    blocked_count INTEGER DEFAULT 0,
+                    created_by INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             # Add promo_code_used column to users table
             try:
                 await db.execute('ALTER TABLE users ADD COLUMN promo_code_used TEXT DEFAULT NULL')
@@ -1459,6 +1476,96 @@ class DatabaseManager:
                 logger.info(f"Retrieved and cleared pending reveal job {job_id} for user {telegram_id}")
                 return job_id
             return None
+
+    # Announcement Operations
+    async def create_announcement(self, message: str, target: str, created_by: int,
+                                   scheduled_at: str = None) -> int:
+        """Create a new announcement. Returns the announcement ID."""
+        async with self._connect() as db:
+            status = 'pending' if scheduled_at else 'sending'
+            cursor = await db.execute(
+                '''INSERT INTO announcements (message, target, scheduled_at, status, created_by)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (message, target, scheduled_at, status, created_by)
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+    async def get_pending_announcements(self) -> List[Dict[str, Any]]:
+        """Get scheduled announcements that are due to be sent."""
+        async with self._connect() as db:
+            now = datetime.now().isoformat()
+            cursor = await db.execute(
+                '''SELECT id, message, target, scheduled_at, created_by
+                   FROM announcements
+                   WHERE status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= ?''',
+                (now,)
+            )
+            rows = await cursor.fetchall()
+            return [{'id': r[0], 'message': r[1], 'target': r[2],
+                     'scheduled_at': r[3], 'created_by': r[4]} for r in rows]
+
+    async def update_announcement_status(self, announcement_id: int, status: str,
+                                          sent_count: int = 0, failed_count: int = 0,
+                                          blocked_count: int = 0) -> None:
+        """Update announcement status and delivery stats."""
+        async with self._connect() as db:
+            sent_at = datetime.now().isoformat() if status == 'sent' else None
+            await db.execute(
+                '''UPDATE announcements SET status = ?, sent_at = COALESCE(?, sent_at),
+                   sent_count = ?, failed_count = ?, blocked_count = ?
+                   WHERE id = ?''',
+                (status, sent_at, sent_count, failed_count, blocked_count, announcement_id)
+            )
+            await db.commit()
+
+    async def get_announcement_history(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent announcement history for admin review."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                '''SELECT id, message, target, status, sent_count, failed_count,
+                          blocked_count, scheduled_at, sent_at, created_at
+                   FROM announcements ORDER BY created_at DESC LIMIT ?''',
+                (limit,)
+            )
+            rows = await cursor.fetchall()
+            return [{'id': r[0], 'message': r[1], 'target': r[2], 'status': r[3],
+                     'sent_count': r[4], 'failed_count': r[5], 'blocked_count': r[6],
+                     'scheduled_at': r[7], 'sent_at': r[8], 'created_at': r[9]} for r in rows]
+
+    async def get_users_for_announcement(self, target: str) -> List[int]:
+        """Get telegram_ids matching the announcement target filter.
+
+        Targets: 'all', 'paid', 'free'/'scout', country code (e.g. 'NG'),
+                 or a specific telegram_id number.
+        """
+        async with self._connect() as db:
+            if target.isdigit():
+                return [int(target)]
+
+            base_where = "keywords IS NOT NULL AND keywords != ''"
+
+            if target == 'all':
+                query = f'SELECT telegram_id FROM users WHERE {base_where}'
+                cursor = await db.execute(query)
+            elif target == 'paid':
+                query = f'''SELECT telegram_id FROM users
+                           WHERE {base_where} AND (is_paid = 1 OR
+                           (subscription_plan != 'scout' AND subscription_expiry > ?))'''
+                cursor = await db.execute(query, (datetime.now().isoformat(),))
+            elif target in ('free', 'scout'):
+                query = f'''SELECT telegram_id FROM users
+                           WHERE {base_where} AND (subscription_plan = 'scout' OR
+                           subscription_plan IS NULL OR subscription_expiry <= ? OR subscription_expiry IS NULL)
+                           AND is_paid = 0'''
+                cursor = await db.execute(query, (datetime.now().isoformat(),))
+            else:
+                # Assume country code
+                query = f'SELECT telegram_id FROM users WHERE {base_where} AND country_code = ?'
+                cursor = await db.execute(query, (target.upper(),))
+
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
 
 # Global database instance
 db_manager = DatabaseManager()

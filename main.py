@@ -63,6 +63,10 @@ async def main():
     reminder_task = asyncio.create_task(bot.run_expiry_reminder_loop())
     logger.info("Expiry reminder loop started")
 
+    # 6. Start Announcement Scheduler Loop (Background Task)
+    announcement_task = asyncio.create_task(bot.run_announcement_scheduler_loop())
+    logger.info("Announcement scheduler loop started")
+
     # 7. Start Bot Polling
     await bot.application.start()
     await bot.application.updater.start_polling()
