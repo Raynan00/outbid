@@ -91,15 +91,18 @@ async def main():
 
     # 9. Graceful Shutdown
     logger.info("Shutting down...")
-    
+
     # Stop scanner
-    scanner.is_running = False 
-    
+    scanner.is_running = False
+
     # Stop bot
     await bot.application.updater.stop()
     await bot.application.stop()
     await bot.application.shutdown()
-    
+
+    # Close database connection
+    await db_manager.close()
+
     logger.info("Shutdown complete.")
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ import asyncio
 import logging
 import aiosqlite
 import re
+from datetime import datetime
 from typing import List, Dict, Any
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -2669,102 +2670,133 @@ class UpworkBot:
             Number of users who received the alert
         """
         try:
-            # Get all active users
-            active_users = await db_manager.get_active_users()
+            # Single batch query - fetches ALL user data needed for filtering + alert prep
+            all_users = await db_manager.get_all_users_for_broadcast()
             admin_users = config.ADMIN_IDS
 
-            # Combine and deduplicate user IDs
-            all_user_ids = set()
-            for user in active_users:
-                all_user_ids.add(user['telegram_id'])
-            for admin_id in admin_users:
-                all_user_ids.add(admin_id)
+            # Build lookup for admin inclusion
+            admin_set = set(admin_users)
+            seen_ids = {u['telegram_id'] for u in all_users}
 
-            # Collect all users who should receive the alert
+            # Add admin users that might not have keywords (fetch individually only if missing)
+            for admin_id in admin_set:
+                if admin_id not in seen_ids:
+                    admin_info = await db_manager.get_user_info(admin_id)
+                    if admin_info:
+                        all_users.append({
+                            'telegram_id': admin_id,
+                            'keywords': admin_info.get('keywords', ''),
+                            'context': admin_info.get('context', ''),
+                            'is_paid': True,
+                            'min_budget': admin_info.get('min_budget', 0),
+                            'max_budget': admin_info.get('max_budget', 999999),
+                            'experience_levels': admin_info.get('experience_levels', 'Entry,Intermediate,Expert'),
+                            'pause_start': admin_info.get('pause_start'),
+                            'country_code': admin_info.get('country_code', 'GLOBAL'),
+                            'subscription_plan': 'monthly',
+                            'subscription_expiry': None,
+                            'is_auto_renewal': False,
+                            'payment_provider': None,
+                            'reveal_credits': 3,
+                        })
+
+            # Filter users in-memory (no DB calls)
+            job_budget = getattr(job_data, 'budget_max', 0) or getattr(job_data, 'budget_min', 0)
+            job_exp = getattr(job_data, 'experience_level', 'Unknown')
             users_to_alert = []
-            for user_id in all_user_ids:
-                user_info = await db_manager.get_user_info(user_id)
-                
-                if not user_info:
-                    continue
-                
+
+            for user_data in all_users:
+                user_id = user_data['telegram_id']
+
                 # Check if user is currently paused
-                pause_until_str = user_info.get('pause_start')  # pause_until stored in pause_start
-                if db_manager.is_user_paused(pause_until_str):
-                    logger.debug(f"Skipping user {user_id} - alerts paused")
+                if db_manager.is_user_paused(user_data.get('pause_start')):
                     continue
-                
+
                 # Check budget filter
-                min_budget = user_info.get('min_budget', 0)
-                max_budget = user_info.get('max_budget', 999999)
-                job_budget = getattr(job_data, 'budget_max', 0) or getattr(job_data, 'budget_min', 0)
-                
-                if job_budget > 0:  # Only filter if job has a budget
+                min_budget = user_data.get('min_budget', 0)
+                max_budget = user_data.get('max_budget', 999999)
+                if job_budget > 0:
                     if job_budget < min_budget:
-                        logger.debug(f"Skipping user {user_id} - job budget ${job_budget} below min ${min_budget}")
                         continue
                     if job_budget > max_budget and max_budget < 999999:
-                        logger.debug(f"Skipping user {user_id} - job budget ${job_budget} above max ${max_budget}")
                         continue
-                
+
                 # Check experience level filter
-                exp_levels = user_info.get('experience_levels', ['Entry', 'Intermediate', 'Expert'])
-                job_exp = getattr(job_data, 'experience_level', 'Unknown')
+                exp_levels = user_data.get('experience_levels', 'Entry,Intermediate,Expert')
+                if isinstance(exp_levels, str):
+                    exp_levels = [e.strip() for e in exp_levels.split(',') if e.strip()]
                 if job_exp != 'Unknown' and exp_levels:
                     if job_exp not in exp_levels:
-                        logger.debug(f"Skipping user {user_id} - job exp {job_exp} not in {exp_levels}")
                         continue
-                
+
                 # Check keyword match
                 should_alert = False
-                if user_info.get('keywords'):
-                    user_keywords = [kw.strip() for kw in user_info['keywords'].split(',') if kw.strip()]
+                if user_data.get('keywords'):
+                    user_keywords = [kw.strip() for kw in user_data['keywords'].split(',') if kw.strip()]
                     if job_data.matches_keywords(user_keywords):
                         should_alert = True
-                elif user_id in admin_users:
-                    # Admins get all jobs regardless of keywords
+                elif user_id in admin_set:
                     should_alert = True
-                
-                if should_alert:
-                    users_to_alert.append(user_id)
 
-            # Optimized two-phase approach for speed:
+                if should_alert:
+                    users_to_alert.append(user_data)
+
+            # Two-phase approach for speed:
             # Phase 1: Generate all proposals in parallel (AI is the bottleneck)
-            # Phase 2: Send all messages in parallel (Telegram handles rate limiting)
-            # This ensures all users get alerts within 1 minute
-            
+            # Phase 2: Send all messages in parallel
+
             if not users_to_alert:
                 return 0
-            
+
             import time
             start_time = time.time()
             logger.info(f"Broadcasting to {len(users_to_alert)} users - generating proposals in parallel...")
-            
+
+            # Store job data once before sending any alerts
+            await db_manager.store_job_for_strategy(job_data.to_dict())
+
             # Phase 1: Generate proposals for PAID users only (scouts get blurred via send_job_alert)
-            async def prepare_alert(user_id: int):
+            async def prepare_alert(user_data: dict):
                 """Prepare alert for a user (generate proposal for paid, mark scouts for blurred)"""
                 try:
-                    # Check authorization
-                    if not await db_manager.is_user_authorized(user_id):
-                        return None
-                    
-                    # Check if user can view proposals (paid vs scout)
-                    permissions = await access_service.get_user_permissions(user_id)
-                    
-                    # Scout users - return marker to trigger send_job_alert (blurred flow, NO AI cost)
-                    if not permissions.get('can_view_proposal', False):
+                    user_id = user_data['telegram_id']
+
+                    # Derive permissions from user_data (no DB call)
+                    # Admin check
+                    if config.is_admin(user_id):
+                        can_view_proposal = True
+                    elif not config.PAYMENTS_ENABLED:
+                        can_view_proposal = True
+                    else:
+                        # Check subscription validity from cached data
+                        plan = user_data.get('subscription_plan', 'scout')
+                        expiry_str = user_data.get('subscription_expiry')
+
+                        if plan == 'scout' or not expiry_str:
+                            can_view_proposal = False
+                        else:
+                            try:
+                                expiry = datetime.fromisoformat(expiry_str)
+                                can_view_proposal = datetime.now() <= expiry
+                            except (ValueError, TypeError):
+                                can_view_proposal = False
+
+                    # Scout users - return marker for blurred flow (NO AI cost)
+                    if not can_view_proposal:
                         return {
                             'user_id': user_id,
-                            'type': 'scout',  # Will be handled by send_job_alert
+                            'type': 'scout',
                             'message': None
                         }
-                    
+
                     # PAID USER - Generate full proposal with AI
-                    # Get user context
-                    user_context = await db_manager.get_user_context(user_id)
-                    if not user_context:
+                    user_context = {
+                        'keywords': user_data.get('keywords', ''),
+                        'context': user_data.get('context', ''),
+                    }
+                    if not user_context.get('keywords'):
                         return None
-                    
+
                     # Check draft limit
                     MAX_DRAFTS = config.MAX_PROPOSAL_DRAFTS
                     try:
@@ -2773,36 +2805,35 @@ class UpworkBot:
                     except Exception as e:
                         logger.error(f"Failed to get draft count for user {user_id}: {e}")
                         draft_count = 0
-                    
+
                     if draft_count >= MAX_DRAFTS:
-                        # Return limit message instead of proposal
                         return {
                             'user_id': user_id,
                             'type': 'limit',
                             'draft_count': draft_count,
                             'message': None
                         }
-                    
-                    # Generate proposal (this is the slow part - happens in parallel for all users)
+
+                    # Generate proposal (slow part - happens in parallel)
                     proposal_text = await self.proposal_generator.generate_proposal(
                         job_data.to_dict(),
                         user_context
                     )
-                    
+
                     if not proposal_text:
                         return None
-                    
+
                     # Increment draft count
                     try:
                         await db_manager.increment_proposal_draft(user_id, job_data.id, is_strategy=False)
                     except Exception as e:
                         logger.error(f"Failed to increment draft count for user {user_id}: {e}")
-                    
+
                     # Format message
                     message_text = self.proposal_generator.format_proposal_for_telegram(
                         proposal_text, job_data.to_dict(), draft_count=draft_count + 1, max_drafts=MAX_DRAFTS
                     )
-                    
+
                     return {
                         'user_id': user_id,
                         'type': 'proposal',
@@ -2810,12 +2841,12 @@ class UpworkBot:
                         'draft_count': draft_count + 1
                     }
                 except Exception as e:
-                    logger.error(f"Error preparing alert for user {user_id}: {e}")
+                    logger.error(f"Error preparing alert for user {user_data.get('telegram_id')}: {e}")
                     return None
-            
+
             # Generate all proposals concurrently (semaphore in ProposalGenerator limits to 5 at a time)
             prepared_alerts = await asyncio.gather(
-                *[prepare_alert(user_id) for user_id in users_to_alert],
+                *[prepare_alert(ud) for ud in users_to_alert],
                 return_exceptions=True
             )
             
@@ -2895,9 +2926,6 @@ class UpworkBot:
                 sent_count = sum(1 for r in send_results if r is True)
             else:
                 sent_count = 0
-            
-            # Store job data once (not per user)
-            await db_manager.store_job_for_strategy(job_data.to_dict())
             
             total_time = time.time() - start_time
             send_time = time.time() - send_start

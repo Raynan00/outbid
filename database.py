@@ -5,6 +5,7 @@ Handles seen jobs tracking and user management using async SQLite.
 
 import aiosqlite
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from config import config
@@ -16,10 +17,44 @@ class DatabaseManager:
 
     def __init__(self, db_path: str = config.DATABASE_PATH):
         self.db_path = db_path
+        self._db: Optional[aiosqlite.Connection] = None
+
+    async def _get_db(self) -> aiosqlite.Connection:
+        """Get or create a persistent database connection."""
+        if self._db is None:
+            self._db = await aiosqlite.connect(self.db_path)
+            # Enable WAL mode for better concurrent read performance
+            await self._db.execute('PRAGMA journal_mode=WAL')
+            await self._db.execute('PRAGMA synchronous=NORMAL')
+            logger.info("Persistent database connection established")
+        return self._db
+
+    @asynccontextmanager
+    async def _connect(self):
+        """Drop-in replacement for aiosqlite.connect() that reuses a persistent connection."""
+        db = await self._get_db()
+        try:
+            yield db
+        except (aiosqlite.OperationalError, aiosqlite.DatabaseError):
+            # Connection broken - reset so next call reconnects
+            logger.warning("Database connection error, will reconnect on next call")
+            self._db = None
+            raise
+
+    async def close(self):
+        """Close the persistent database connection."""
+        if self._db is not None:
+            try:
+                await self._db.close()
+                logger.info("Database connection closed")
+            except Exception as e:
+                logger.error(f"Error closing database: {e}")
+            finally:
+                self._db = None
 
     async def init_db(self) -> None:
         """Initialize database tables."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Create seen_jobs table
             await db.execute('''
                 CREATE TABLE IF NOT EXISTS seen_jobs (
@@ -207,14 +242,14 @@ class DatabaseManager:
     # Seen Jobs Operations
     async def is_job_seen(self, job_id: str) -> bool:
         """Check if a job has been seen before."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute('SELECT id FROM seen_jobs WHERE id = ?', (job_id,))
             result = await cursor.fetchone()
             return result is not None
 
     async def mark_job_seen(self, job_id: str, title: str, link: str) -> None:
         """Mark a job as seen."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'INSERT OR REPLACE INTO seen_jobs (id, timestamp, title, link) VALUES (?, ?, ?, ?)',
                 (job_id, datetime.now(), title, link)
@@ -225,7 +260,7 @@ class DatabaseManager:
     async def get_recent_jobs(self, hours: int = 24) -> List[Dict[str, Any]]:
         """Get jobs seen in the last N hours."""
         cutoff_time = datetime.now() - timedelta(hours=hours)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT id, title, link, timestamp FROM seen_jobs WHERE timestamp > ? ORDER BY timestamp DESC',
                 (cutoff_time,)
@@ -245,7 +280,7 @@ class DatabaseManager:
     async def cleanup_old_jobs(self, days: int = 30) -> int:
         """Remove jobs older than N days. Returns number of deleted records."""
         cutoff_time = datetime.now() - timedelta(days=days)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute('DELETE FROM seen_jobs WHERE timestamp < ?', (cutoff_time,))
             deleted_count = cursor.rowcount
             await db.commit()
@@ -255,7 +290,7 @@ class DatabaseManager:
     # Alert Tracking Operations
     async def record_alert_sent(self, job_id: str, user_id: int, alert_type: str = 'proposal') -> None:
         """Record that an alert was sent to a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'INSERT INTO alerts_sent (job_id, user_id, alert_type) VALUES (?, ?, ?)',
                 (job_id, user_id, alert_type)
@@ -264,7 +299,7 @@ class DatabaseManager:
 
     async def get_alerts_stats(self) -> Dict[str, Any]:
         """Get alert statistics."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             stats = {}
             
             # Total alerts ever sent
@@ -293,7 +328,7 @@ class DatabaseManager:
     # User Management Operations
     async def add_user(self, telegram_id: int, is_paid: bool = False) -> None:
         """Add or update a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Check if user exists
             cursor = await db.execute('SELECT reveal_credits FROM users WHERE telegram_id = ?', (telegram_id,))
             existing = await cursor.fetchone()
@@ -315,7 +350,7 @@ class DatabaseManager:
 
     async def update_user_onboarding(self, telegram_id: int, keywords: str = None, context: str = None) -> None:
         """Update user onboarding information."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             updates = []
             params = []
 
@@ -352,7 +387,7 @@ class DatabaseManager:
             return True
 
         # Check if user exists and has completed onboarding (has keywords)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT keywords FROM users WHERE telegram_id = ?',
                 (telegram_id,)
@@ -365,7 +400,7 @@ class DatabaseManager:
     # State Management Operations
     async def set_user_state(self, telegram_id: int, state: str, current_job_id: str = "") -> None:
         """Set user state for onboarding or strategy mode."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET state = ?, current_job_id = ?, updated_at = ? WHERE telegram_id = ?',
                 (state, current_job_id, datetime.now(), telegram_id)
@@ -375,7 +410,7 @@ class DatabaseManager:
 
     async def clear_user_state(self, telegram_id: int) -> None:
         """Clear user state (end onboarding or strategy session)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET state = "", current_job_id = "", updated_at = ? WHERE telegram_id = ?',
                 (datetime.now(), telegram_id)
@@ -385,7 +420,7 @@ class DatabaseManager:
 
     async def get_user_context(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Get user context including keywords, bio, and state for proposal generation."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT keywords, context, state, current_job_id, referral_code FROM users WHERE telegram_id = ?',
                 (telegram_id,)
@@ -410,7 +445,7 @@ class DatabaseManager:
         import secrets
         referral_code = secrets.token_hex(4).upper()  # 8-character code
 
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET referral_code = ?, updated_at = ? WHERE telegram_id = ?',
                 (referral_code, datetime.now(), telegram_id)
@@ -421,7 +456,7 @@ class DatabaseManager:
 
     async def process_referral(self, referrer_code: str, new_user_id: int) -> bool:
         """Process a referral when a new user signs up with a referral code."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Find the referrer
             cursor = await db.execute(
                 'SELECT id FROM users WHERE referral_code = ?',
@@ -452,7 +487,7 @@ class DatabaseManager:
 
     async def activate_referral(self, user_id: int) -> None:
         """Mark a referral as activated when user completes payment."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE referrals SET status = ?, activated_at = ? WHERE referred_id = ?',
                 ('activated', datetime.now(), user_id)
@@ -461,7 +496,7 @@ class DatabaseManager:
 
     async def get_referral_stats(self, telegram_id: int) -> Dict[str, int]:
         """Get referral statistics for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT COUNT(*) FROM referrals WHERE referrer_id = (SELECT id FROM users WHERE telegram_id = ?) AND status = ?',
                 (telegram_id, 'activated')
@@ -483,7 +518,7 @@ class DatabaseManager:
     # Promo Code System
     async def get_promo_code(self, code: str) -> Optional[Dict[str, Any]]:
         """Get promo code details if valid and active."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 '''SELECT code, discount_percent, applies_to, max_uses, times_used, is_active
                    FROM promo_codes WHERE UPPER(code) = UPPER(?) AND is_active = 1''',
@@ -514,7 +549,7 @@ class DatabaseManager:
         Only applies if user hasn't used a promo code before.
         """
         # Check if user already has a promo code
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT promo_code_used FROM users WHERE telegram_id = ?',
                 (telegram_id,)
@@ -530,7 +565,7 @@ class DatabaseManager:
             return None
 
         # Apply promo code to user
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET promo_code_used = ?, updated_at = ? WHERE telegram_id = ?',
                 (promo['code'], datetime.now(), telegram_id)
@@ -547,7 +582,7 @@ class DatabaseManager:
 
     async def get_user_promo(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Get the promo code a user has applied (if any)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT promo_code_used FROM users WHERE telegram_id = ?',
                 (telegram_id,)
@@ -561,7 +596,7 @@ class DatabaseManager:
 
     async def increment_promo_conversion(self, code: str) -> None:
         """Increment the conversion count for a promo code (when user becomes premium)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE promo_codes SET conversions = conversions + 1 WHERE UPPER(code) = UPPER(?)',
                 (code,)
@@ -571,7 +606,7 @@ class DatabaseManager:
 
     async def get_promo_stats(self, code: str) -> Optional[Dict[str, Any]]:
         """Get statistics for a promo code."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 '''SELECT code, discount_percent, applies_to, max_uses, times_used, conversions, is_active, created_at
                    FROM promo_codes WHERE UPPER(code) = UPPER(?)''',
@@ -596,7 +631,7 @@ class DatabaseManager:
     async def create_promo_code(self, code: str, discount_percent: int = 20, applies_to: str = 'monthly', max_uses: int = None) -> bool:
         """Create a new promo code."""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._connect() as db:
                 await db.execute(
                     '''INSERT INTO promo_codes (code, discount_percent, applies_to, max_uses)
                        VALUES (?, ?, ?, ?)''',
@@ -612,7 +647,7 @@ class DatabaseManager:
     async def delete_promo_code(self, code: str) -> bool:
         """Delete a promo code."""
         try:
-            async with aiosqlite.connect(self.db_path) as db:
+            async with self._connect() as db:
                 cursor = await db.execute(
                     'DELETE FROM promo_codes WHERE UPPER(code) = UPPER(?)',
                     (code,)
@@ -629,7 +664,7 @@ class DatabaseManager:
     # Job Storage for Strategy Mode
     async def store_job_for_strategy(self, job_data: Dict[str, Any]) -> None:
         """Store job data for potential strategy mode usage."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute('''
                 INSERT OR REPLACE INTO jobs (id, title, link, description, tags, budget, published)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -646,7 +681,7 @@ class DatabaseManager:
 
     async def get_job_for_strategy(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve job data for strategy mode."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT id, title, link, description, tags, budget, published FROM jobs WHERE id = ?',
                 (job_id,)
@@ -669,7 +704,7 @@ class DatabaseManager:
     # Payment Activation
     async def activate_user_payment(self, telegram_id: int) -> None:
         """Activate user payment status."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET is_paid = 1, updated_at = ? WHERE telegram_id = ?',
                 (datetime.now(), telegram_id)
@@ -690,7 +725,7 @@ class DatabaseManager:
         Payment status only affects whether proposals are blurred or full - 
         scouts still receive alerts with blurred content.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Return all users who have completed onboarding (have keywords)
             # Payment status is checked separately in send_job_alert for blurring
             cursor = await db.execute(
@@ -707,10 +742,53 @@ class DatabaseManager:
             })
         return users
 
+    async def get_all_users_for_broadcast(self) -> List[Dict[str, Any]]:
+        """Fetch all user data needed for broadcast filtering and alert prep in ONE query.
+
+        Returns all onboarded users with the fields needed for:
+        - Pause checking (pause_start)
+        - Budget filtering (min_budget, max_budget)
+        - Experience filtering (experience_levels)
+        - Keyword matching (keywords)
+        - Permission derivation (subscription_plan, subscription_expiry, is_auto_renewal, is_paid)
+        - Alert preparation (context, country_code, reveal_credits)
+        """
+        async with self._connect() as db:
+            cursor = await db.execute('''
+                SELECT telegram_id, keywords, context, is_paid,
+                       min_budget, max_budget, experience_levels,
+                       pause_start, country_code,
+                       subscription_plan, subscription_expiry,
+                       is_auto_renewal, payment_provider, reveal_credits
+                FROM users
+                WHERE keywords IS NOT NULL AND keywords != ''
+            ''')
+            rows = await cursor.fetchall()
+
+        users = []
+        for row in rows:
+            users.append({
+                'telegram_id': row[0],
+                'keywords': row[1] or '',
+                'context': row[2] or '',
+                'is_paid': bool(row[3]),
+                'min_budget': row[4] or 0,
+                'max_budget': row[5] or 999999,
+                'experience_levels': row[6] or 'Entry,Intermediate,Expert',
+                'pause_start': row[7],
+                'country_code': row[8] or 'GLOBAL',
+                'subscription_plan': row[9] or 'scout',
+                'subscription_expiry': row[10],
+                'is_auto_renewal': bool(row[11]),
+                'payment_provider': row[12],
+                'reveal_credits': row[13] if row[13] is not None else 3,
+            })
+        return users
+
     # Proposal Draft Tracking
     async def get_proposal_draft_count(self, telegram_id: int, job_id: str) -> Dict[str, int]:
         """Get proposal draft counts for a user and job."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Get user ID
             cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
             user_result = await cursor.fetchone()
@@ -732,7 +810,7 @@ class DatabaseManager:
 
     async def increment_proposal_draft(self, telegram_id: int, job_id: str, is_strategy: bool = False) -> int:
         """Increment proposal draft count for a user and job. Returns the new count."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Get user ID
             cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
             user_result = await cursor.fetchone()
@@ -786,7 +864,7 @@ class DatabaseManager:
     # Database Statistics (for admin dashboard)
     async def get_database_stats(self) -> Dict[str, Any]:
         """Get comprehensive database statistics for admin dashboard."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             stats = {}
             
             # User statistics
@@ -845,7 +923,7 @@ class DatabaseManager:
 
     async def get_all_users_summary(self) -> List[Dict[str, Any]]:
         """Get summary of all users for admin view."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute('''
                 SELECT telegram_id, keywords, is_paid, created_at, updated_at, 
                        min_budget, max_budget, experience_levels
@@ -870,7 +948,7 @@ class DatabaseManager:
 
     async def get_user_draft_summary(self, telegram_id: int = None) -> List[Dict[str, Any]]:
         """Get proposal draft summary, optionally filtered by user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             if telegram_id:
                 # Get user ID
                 cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
@@ -915,7 +993,7 @@ class DatabaseManager:
 
     async def get_user_info(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed user information."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 '''SELECT telegram_id, keywords, context, is_paid, state, current_job_id, 
                    created_at, updated_at, min_budget, max_budget, experience_levels, 
@@ -954,7 +1032,7 @@ class DatabaseManager:
     async def update_user_filters(self, telegram_id: int, min_budget: int = None, 
                                    max_budget: int = None, experience_levels: List[str] = None) -> None:
         """Update user budget and experience level filters."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             updates = []
             params = []
             
@@ -983,7 +1061,7 @@ class DatabaseManager:
     async def set_user_pause(self, telegram_id: int, hours: int) -> datetime:
         """Pause alerts for X hours. Returns the pause_until datetime."""
         pause_until = datetime.now() + timedelta(hours=hours)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET pause_start = ?, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
                 (pause_until.isoformat(), datetime.now(), telegram_id)
@@ -996,7 +1074,7 @@ class DatabaseManager:
         """Pause alerts indefinitely until manually resumed."""
         # Use year 9999 as "indefinite" marker
         pause_until = datetime(9999, 12, 31, 23, 59, 59)
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET pause_start = ?, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
                 (pause_until.isoformat(), datetime.now(), telegram_id)
@@ -1006,7 +1084,7 @@ class DatabaseManager:
 
     async def clear_user_pause(self, telegram_id: int) -> None:
         """Clear user pause (resume alerts)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET pause_start = NULL, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
                 (datetime.now(), telegram_id)
@@ -1056,7 +1134,7 @@ class DatabaseManager:
     
     async def update_user_country(self, telegram_id: int, country_code: str) -> None:
         """Update user's country code (NG or GLOBAL)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET country_code = ?, updated_at = ? WHERE telegram_id = ?',
                 (country_code, datetime.now(), telegram_id)
@@ -1066,7 +1144,7 @@ class DatabaseManager:
 
     async def update_user_email(self, telegram_id: int, email: str) -> None:
         """Update user's email address (needed for Paystack)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET email = ?, updated_at = ? WHERE telegram_id = ?',
                 (email, datetime.now(), telegram_id)
@@ -1076,7 +1154,7 @@ class DatabaseManager:
 
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Get user info by email address (for Paystack subscription lookups)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(
                 'SELECT telegram_id, email, subscription_plan FROM users WHERE email = ?',
@@ -1090,7 +1168,7 @@ class DatabaseManager:
     async def grant_subscription(self, telegram_id: int, plan: str, expiry: datetime, 
                                   payment_provider: str, is_auto_renewal: bool = False) -> None:
         """Grant subscription to user after payment confirmation."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute('''
                 UPDATE users SET 
                     subscription_plan = ?,
@@ -1106,7 +1184,7 @@ class DatabaseManager:
 
     async def downgrade_to_scout(self, telegram_id: int) -> None:
         """Downgrade user to scout plan (expired subscription)."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute('''
                 UPDATE users SET 
                     subscription_plan = 'scout',
@@ -1121,7 +1199,7 @@ class DatabaseManager:
 
     async def set_auto_renewal(self, telegram_id: int, enabled: bool) -> None:
         """Set user's auto-renewal status."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET is_auto_renewal = ?, updated_at = ? WHERE telegram_id = ?',
                 (1 if enabled else 0, datetime.now(), telegram_id)
@@ -1131,7 +1209,7 @@ class DatabaseManager:
 
     async def check_subscription_expired(self, telegram_id: int) -> bool:
         """Check if user's subscription has expired. Returns True if expired."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT subscription_plan, subscription_expiry FROM users WHERE telegram_id = ?',
                 (telegram_id,)
@@ -1155,7 +1233,7 @@ class DatabaseManager:
 
     async def get_subscription_status(self, telegram_id: int) -> Dict[str, Any]:
         """Get user's current subscription status."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 '''SELECT subscription_plan, subscription_expiry, is_auto_renewal, 
                    payment_provider, country_code FROM users WHERE telegram_id = ?''',
@@ -1204,7 +1282,7 @@ class DatabaseManager:
         cutoff = datetime.now() + timedelta(hours=hours)
         now = datetime.now()
         
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute('''
                 SELECT telegram_id, subscription_plan, subscription_expiry 
                 FROM users 
@@ -1234,7 +1312,7 @@ class DatabaseManager:
     
     async def get_reveal_credits(self, telegram_id: int) -> int:
         """Get remaining reveal credits for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT reveal_credits FROM users WHERE telegram_id = ?',
                 (telegram_id,)
@@ -1250,7 +1328,7 @@ class DatabaseManager:
         Use a reveal credit for a user and store the revealed proposal.
         Returns True if credit was used successfully, False if no credits left.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Get user ID
             cursor = await db.execute('SELECT id, reveal_credits FROM users WHERE telegram_id = ?', (telegram_id,))
             user_result = await cursor.fetchone()
@@ -1299,7 +1377,7 @@ class DatabaseManager:
     
     async def is_job_revealed(self, telegram_id: int, job_id: str) -> bool:
         """Check if a job has already been revealed for a user."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Get user ID
             cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
             user_result = await cursor.fetchone()
@@ -1322,7 +1400,7 @@ class DatabaseManager:
         Get the stored proposal for a revealed job.
         Returns None if job not revealed, or dict with proposal_text and revealed_at.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Get user ID
             cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
             user_result = await cursor.fetchone()
@@ -1350,7 +1428,7 @@ class DatabaseManager:
     
     async def set_pending_reveal_job(self, telegram_id: int, job_id: str) -> None:
         """Store the job ID that triggered the paywall for auto-reveal after payment."""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute(
                 'UPDATE users SET pending_reveal_job_id = ?, updated_at = ? WHERE telegram_id = ?',
                 (job_id, datetime.now(), telegram_id)
@@ -1363,7 +1441,7 @@ class DatabaseManager:
         Get and clear the pending reveal job ID.
         Returns the job_id if exists, None otherwise.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute(
                 'SELECT pending_reveal_job_id FROM users WHERE telegram_id = ?',
                 (telegram_id,)
