@@ -30,7 +30,7 @@ from billing_service import billing_service
 logger = logging.getLogger(__name__)
 
 # Conversation states for onboarding, strategy, and settings
-ONBOARDING_KEYWORDS, ONBOARDING_BIO, STRATEGIZING, UPDATE_KEYWORDS, UPDATE_BIO, AWAITING_EMAIL, ADD_KEYWORDS = range(7)
+ONBOARDING_KEYWORDS, ONBOARDING_BIO, STRATEGIZING, UPDATE_KEYWORDS, UPDATE_BIO, AWAITING_EMAIL, ADD_KEYWORDS, CUSTOM_BUDGET, CUSTOM_HOURLY = range(9)
 
 # Quick-pick keyword categories with auto-expanded keywords
 KEYWORD_QUICK_PICKS = {
@@ -613,6 +613,84 @@ class UpworkBot:
         )
         return ConversationHandler.END
 
+    async def handle_custom_budget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle custom fixed-price budget input from user."""
+        user_id = update.effective_user.id
+        text = update.message.text.strip().replace('$', '').replace(',', '')
+
+        try:
+            if '-' in text:
+                parts = text.split('-')
+                min_val = int(parts[0].strip())
+                max_val = int(parts[1].strip())
+            else:
+                min_val = int(text.strip())
+                max_val = 999999
+
+            if min_val < 0 or (max_val != 999999 and max_val < min_val):
+                raise ValueError("Invalid range")
+
+            await db_manager.update_user_filters(user_id, min_budget=min_val, max_budget=max_val)
+            await db_manager.clear_user_state(user_id)
+
+            if max_val >= 999999:
+                display = f"${min_val}+"
+            else:
+                display = f"${min_val} - ${max_val}"
+
+            await self.safe_reply_text(
+                update,
+                f"Fixed-price budget filter updated to: {display}\n\n"
+                "Use /settings to view all settings."
+            )
+        except (ValueError, IndexError):
+            await self.safe_reply_text(
+                update,
+                "Invalid format. Try:\n"
+                "  200 - for $200+\n"
+                "  200-1000 - for $200 to $1000\n\n"
+                "Or /cancel to go back."
+            )
+
+    async def handle_custom_hourly(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle custom hourly rate input from user."""
+        user_id = update.effective_user.id
+        text = update.message.text.strip().replace('$', '').replace(',', '').replace('/hr', '')
+
+        try:
+            if '-' in text:
+                parts = text.split('-')
+                min_val = int(parts[0].strip())
+                max_val = int(parts[1].strip())
+            else:
+                min_val = int(text.strip())
+                max_val = 999
+
+            if min_val < 0 or (max_val != 999 and max_val < min_val):
+                raise ValueError("Invalid range")
+
+            await db_manager.update_user_filters(user_id, min_hourly=min_val, max_hourly=max_val)
+            await db_manager.clear_user_state(user_id)
+
+            if max_val >= 999:
+                display = f"${min_val}+/hr"
+            else:
+                display = f"${min_val} - ${max_val}/hr"
+
+            await self.safe_reply_text(
+                update,
+                f"Hourly rate filter updated to: {display}\n\n"
+                "Use /settings to view all settings."
+            )
+        except (ValueError, IndexError):
+            await self.safe_reply_text(
+                update,
+                "Invalid format. Try:\n"
+                "  35 - for $35+/hr\n"
+                "  35-75 - for $35 to $75/hr\n\n"
+                "Or /cancel to go back."
+            )
+
     # Cost Protection - General Message Handler
     async def handle_general_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle general messages with cost protection guardrails."""
@@ -639,6 +717,12 @@ class UpworkBot:
             elif state == "STRATEGIZING":
                 # Handle War Room strategy input
                 await self.handle_strategy_input(update, context)
+                return
+            elif state == "CUSTOM_BUDGET":
+                await self.handle_custom_budget(update, context)
+                return
+            elif state == "CUSTOM_HOURLY":
+                await self.handle_custom_hourly(update, context)
                 return
             # For onboarding states (ONBOARDING_KEYWORDS, ONBOARDING_BIO), 
             # the conversation handler should catch them via /start entry
@@ -2431,7 +2515,21 @@ class UpworkBot:
             )
 
         elif query.data == "update_budget":
-            # Show budget filter options
+            # Show budget type selection
+            keyboard = [
+                [InlineKeyboardButton("Fixed-Price Budget", callback_data="budget_type_fixed")],
+                [InlineKeyboardButton("Hourly Rate", callback_data="budget_type_hourly")],
+                [InlineKeyboardButton("Cancel", callback_data="cancel_settings")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text="Set Budget Filter\n\n"
+                "Which type of job budget do you want to filter?",
+                reply_markup=reply_markup
+            )
+
+        elif query.data == "budget_type_fixed":
+            # Show fixed-price budget options
             keyboard = [
                 [InlineKeyboardButton("Any Budget", callback_data="budget_0_999999")],
                 [InlineKeyboardButton("$50+", callback_data="budget_50_999999")],
@@ -2441,13 +2539,36 @@ class UpworkBot:
                 [InlineKeyboardButton("$1000+", callback_data="budget_1000_999999")],
                 [InlineKeyboardButton("$100 - $500", callback_data="budget_100_500")],
                 [InlineKeyboardButton("$500 - $2000", callback_data="budget_500_2000")],
+                [InlineKeyboardButton("Custom Range", callback_data="budget_custom")],
                 [InlineKeyboardButton("Cancel", callback_data="cancel_settings")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(
-                text="Set Budget Filter\n\n"
-                "Select minimum budget for job alerts:\n\n"
-                "(Jobs below this budget will be filtered out)",
+                text="Fixed-Price Budget Filter\n\n"
+                "Select minimum project budget:\n\n"
+                "(Fixed-price jobs below this will be filtered out)",
+                reply_markup=reply_markup
+            )
+
+        elif query.data == "budget_type_hourly":
+            # Show hourly rate filter options
+            keyboard = [
+                [InlineKeyboardButton("Any Rate", callback_data="hourly_0_999")],
+                [InlineKeyboardButton("$10+/hr", callback_data="hourly_10_999")],
+                [InlineKeyboardButton("$25+/hr", callback_data="hourly_25_999")],
+                [InlineKeyboardButton("$50+/hr", callback_data="hourly_50_999")],
+                [InlineKeyboardButton("$75+/hr", callback_data="hourly_75_999")],
+                [InlineKeyboardButton("$100+/hr", callback_data="hourly_100_999")],
+                [InlineKeyboardButton("$25 - $50/hr", callback_data="hourly_25_50")],
+                [InlineKeyboardButton("$50 - $100/hr", callback_data="hourly_50_100")],
+                [InlineKeyboardButton("Custom Range", callback_data="hourly_custom")],
+                [InlineKeyboardButton("Cancel", callback_data="cancel_settings")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                text="Hourly Rate Filter\n\n"
+                "Select minimum hourly rate:\n\n"
+                "(Hourly jobs below this rate will be filtered out)",
                 reply_markup=reply_markup
             )
         
@@ -2465,10 +2586,52 @@ class UpworkBot:
                     budget_text = f"${min_budget} - ${max_budget}"
                 
                 await query.edit_message_text(
-                    text=f"Budget filter updated to: {budget_text}\n\n"
+                    text=f"Fixed-price budget filter updated to: {budget_text}\n\n"
                     "Use /settings to view all settings."
                 )
-        
+
+        elif query.data.startswith("hourly_"):
+            # Parse hourly range: hourly_MIN_MAX
+            parts = query.data.split("_")
+            if len(parts) == 3:
+                min_hourly = int(parts[1])
+                max_hourly = int(parts[2])
+                await db_manager.update_user_filters(user_id, min_hourly=min_hourly, max_hourly=max_hourly)
+
+                if max_hourly >= 999:
+                    hourly_text = f"${min_hourly}+/hr" if min_hourly > 0 else "Any"
+                else:
+                    hourly_text = f"${min_hourly} - ${max_hourly}/hr"
+
+                await query.edit_message_text(
+                    text=f"Hourly rate filter updated to: {hourly_text}\n\n"
+                    "Use /settings to view all settings."
+                )
+
+        elif query.data == "budget_custom":
+            await db_manager.set_user_state(user_id, "CUSTOM_BUDGET")
+            context.user_data['state'] = CUSTOM_BUDGET
+            await query.edit_message_text(
+                text="Custom Fixed-Price Budget\n\n"
+                "Type your min and max budget separated by a dash.\n\n"
+                "Examples:\n"
+                "  200 - for $200+ (no max)\n"
+                "  200-1000 - for $200 to $1000\n\n"
+                "Or /cancel to go back."
+            )
+
+        elif query.data == "hourly_custom":
+            await db_manager.set_user_state(user_id, "CUSTOM_HOURLY")
+            context.user_data['state'] = CUSTOM_HOURLY
+            await query.edit_message_text(
+                text="Custom Hourly Rate\n\n"
+                "Type your min and max hourly rate separated by a dash.\n\n"
+                "Examples:\n"
+                "  35 - for $35+/hr (no max)\n"
+                "  35-75 - for $35 to $75/hr\n\n"
+                "Or /cancel to go back."
+            )
+
         elif query.data == "update_experience":
             # Show experience level options (multi-select would require more complex state)
             keyboard = [
@@ -2854,6 +3017,14 @@ class UpworkBot:
             budget_display = f"${min_budget}+" if min_budget > 0 else "Any"
         else:
             budget_display = f"${min_budget} - ${max_budget}"
+
+        # Format hourly rate display
+        min_hourly = user_info.get('min_hourly', 0)
+        max_hourly = user_info.get('max_hourly', 999)
+        if max_hourly >= 999:
+            hourly_display = f"${min_hourly}+/hr" if min_hourly > 0 else "Any"
+        else:
+            hourly_display = f"${min_hourly} - ${max_hourly}/hr"
         
         # Format experience levels
         exp_levels = user_info.get('experience_levels', ['Entry', 'Intermediate', 'Expert'])
@@ -2882,7 +3053,8 @@ class UpworkBot:
             f"🎯 *Keywords:* {keywords_display}\n\n"
             f"📝 *Bio:* {bio_preview}\n"
             f"   ({bio_length}/1500 characters)\n\n"
-            f"💰 *Budget Filter:* {budget_display}\n"
+            f"💰 *Fixed Budget:* {budget_display}\n"
+            f"⏱ *Hourly Rate:* {hourly_display}\n"
             f"📈 *Experience:* {exp_display}\n"
             f"🔔 *Alerts:* {pause_display}\n\n"
             "Click buttons below to update:"
@@ -2960,6 +3132,7 @@ class UpworkBot:
 
             # Filter users in-memory (no DB calls)
             job_budget = getattr(job_data, 'budget_max', 0) or getattr(job_data, 'budget_min', 0)
+            job_type = getattr(job_data, 'job_type', 'Unknown')
             job_exp = getattr(job_data, 'experience_level', 'Unknown')
             users_to_alert = []
 
@@ -2971,13 +3144,24 @@ class UpworkBot:
                     continue
 
                 # Check budget filter
-                min_budget = user_data.get('min_budget', 0)
-                max_budget = user_data.get('max_budget', 999999)
-                if job_budget > 0:
-                    if job_budget < min_budget:
-                        continue
-                    if job_budget > max_budget and max_budget < 999999:
-                        continue
+                if job_type == 'Hourly':
+                    # Hourly jobs: filter by hourly rate
+                    min_hourly = user_data.get('min_hourly', 0)
+                    max_hourly = user_data.get('max_hourly', 999)
+                    if job_budget > 0:
+                        if job_budget < min_hourly:
+                            continue
+                        if job_budget > max_hourly and max_hourly < 999:
+                            continue
+                else:
+                    # Fixed jobs: filter by project budget
+                    min_budget = user_data.get('min_budget', 0)
+                    max_budget = user_data.get('max_budget', 999999)
+                    if job_budget > 0:
+                        if job_budget < min_budget:
+                            continue
+                        if job_budget > max_budget and max_budget < 999999:
+                            continue
 
                 # Check experience level filter
                 exp_levels = user_data.get('experience_levels', 'Entry,Intermediate,Expert')

@@ -253,6 +253,14 @@ class DatabaseManager:
                 await db.execute('ALTER TABLE users ADD COLUMN promo_code_used TEXT DEFAULT NULL')
             except: pass
 
+            # Add hourly rate filter columns to users table
+            try:
+                await db.execute('ALTER TABLE users ADD COLUMN min_hourly INTEGER DEFAULT 0')
+            except: pass
+            try:
+                await db.execute('ALTER TABLE users ADD COLUMN max_hourly INTEGER DEFAULT 999')
+            except: pass
+
             await db.commit()
             logger.info("Database initialized successfully")
 
@@ -764,7 +772,7 @@ class DatabaseManager:
 
         Returns all onboarded users with the fields needed for:
         - Pause checking (pause_start)
-        - Budget filtering (min_budget, max_budget)
+        - Budget filtering (min_budget, max_budget, min_hourly, max_hourly)
         - Experience filtering (experience_levels)
         - Keyword matching (keywords)
         - Permission derivation (subscription_plan, subscription_expiry, is_auto_renewal, is_paid)
@@ -776,7 +784,8 @@ class DatabaseManager:
                        min_budget, max_budget, experience_levels,
                        pause_start, country_code,
                        subscription_plan, subscription_expiry,
-                       is_auto_renewal, payment_provider, reveal_credits
+                       is_auto_renewal, payment_provider, reveal_credits,
+                       min_hourly, max_hourly
                 FROM users
                 WHERE keywords IS NOT NULL AND keywords != ''
             ''')
@@ -799,6 +808,8 @@ class DatabaseManager:
                 'is_auto_renewal': bool(row[11]),
                 'payment_provider': row[12],
                 'reveal_credits': row[13] if row[13] is not None else 3,
+                'min_hourly': row[14] or 0,
+                'max_hourly': row[15] or 999,
             })
         return users
 
@@ -1012,10 +1023,11 @@ class DatabaseManager:
         """Get detailed user information."""
         async with self._connect() as db:
             cursor = await db.execute(
-                '''SELECT telegram_id, keywords, context, is_paid, state, current_job_id, 
-                   created_at, updated_at, min_budget, max_budget, experience_levels, 
+                '''SELECT telegram_id, keywords, context, is_paid, state, current_job_id,
+                   created_at, updated_at, min_budget, max_budget, experience_levels,
                    pause_start, pause_end, country_code, subscription_plan, subscription_expiry,
-                   is_auto_renewal, payment_provider, email FROM users WHERE telegram_id = ?''',
+                   is_auto_renewal, payment_provider, email, min_hourly, max_hourly
+                   FROM users WHERE telegram_id = ?''',
                 (telegram_id,)
             )
             result = await cursor.fetchone()
@@ -1042,25 +1054,36 @@ class DatabaseManager:
             'subscription_expiry': result[15],
             'is_auto_renewal': bool(result[16]),
             'payment_provider': result[17],
-            'email': result[18]
+            'email': result[18],
+            'min_hourly': result[19] or 0,
+            'max_hourly': result[20] or 999,
         }
 
     # Budget and Filter Settings
-    async def update_user_filters(self, telegram_id: int, min_budget: int = None, 
-                                   max_budget: int = None, experience_levels: List[str] = None) -> None:
-        """Update user budget and experience level filters."""
+    async def update_user_filters(self, telegram_id: int, min_budget: int = None,
+                                   max_budget: int = None, experience_levels: List[str] = None,
+                                   min_hourly: int = None, max_hourly: int = None) -> None:
+        """Update user budget, hourly rate, and experience level filters."""
         async with self._connect() as db:
             updates = []
             params = []
-            
+
             if min_budget is not None:
                 updates.append("min_budget = ?")
                 params.append(min_budget)
-            
+
             if max_budget is not None:
                 updates.append("max_budget = ?")
                 params.append(max_budget)
-            
+
+            if min_hourly is not None:
+                updates.append("min_hourly = ?")
+                params.append(min_hourly)
+
+            if max_hourly is not None:
+                updates.append("max_hourly = ?")
+                params.append(max_hourly)
+
             if experience_levels is not None:
                 updates.append("experience_levels = ?")
                 params.append(','.join(experience_levels))
