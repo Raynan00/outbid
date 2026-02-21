@@ -256,6 +256,7 @@ class UpworkBot:
         self.application.add_handler(CommandHandler("admin_drafts", self.admin_drafts_command))
         self.application.add_handler(CommandHandler("promo", self.admin_promo_command))
         self.application.add_handler(CommandHandler("announce", self.announce_command))
+        self.application.add_handler(CommandHandler("gift", self.gift_command))
         self.application.add_handler(CommandHandler("redeem", self.redeem_command))
         self.application.add_handler(CallbackQueryHandler(self.button_callback))
 
@@ -1582,6 +1583,72 @@ class UpworkBot:
             logger.error(f"Admin promo command failed: {e}")
             await self.safe_reply_text(update, f"Error: {e}")
 
+    async def gift_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /gift command - manually grant a subscription to a user (admin only).
+
+        Usage:
+            /gift <telegram_id> <plan>
+            Plans: daily, weekly, monthly
+        """
+        user_id = update.effective_user.id
+
+        if not config.is_admin(user_id):
+            await self.safe_reply_text(update, "Access denied. Admin only.")
+            return
+
+        args = context.args
+        if not args or len(args) < 2:
+            await self.safe_reply_text(
+                update,
+                "Usage: `/gift <telegram_id> <plan>`\n\n"
+                "Plans: `daily`, `weekly`, `monthly`\n\n"
+                "Example: `/gift 1234567890 monthly`",
+                parse_mode='Markdown'
+            )
+            return
+
+        try:
+            target_id = int(args[0])
+            plan = args[1].lower()
+
+            if plan not in ('daily', 'weekly', 'monthly'):
+                await self.safe_reply_text(update, "Invalid plan. Use: `daily`, `weekly`, or `monthly`", parse_mode='Markdown')
+                return
+
+            # Check if user exists
+            user_info = await db_manager.get_user_info(target_id)
+            if not user_info:
+                await self.safe_reply_text(update, f"User `{target_id}` not found in database.", parse_mode='Markdown')
+                return
+
+            # Grant access using billing service
+            success = await billing_service.grant_access(target_id, plan, 'admin_gift')
+            if success:
+                # Notify the user
+                try:
+                    await self.application.bot.send_message(
+                        chat_id=target_id,
+                        text=f"You've been upgraded to *{plan}* plan! Enjoy full access to proposals.\n\n"
+                             "Use /status to check your subscription.",
+                        parse_mode='Markdown'
+                    )
+                except Exception:
+                    pass
+
+                await self.safe_reply_text(
+                    update,
+                    f"Gifted *{plan}* subscription to user `{target_id}`.",
+                    parse_mode='Markdown'
+                )
+            else:
+                await self.safe_reply_text(update, "Failed to grant access. Check logs.")
+
+        except ValueError:
+            await self.safe_reply_text(update, "Invalid telegram ID. Must be a number.")
+        except Exception as e:
+            logger.error(f"Gift command failed: {e}")
+            await self.safe_reply_text(update, f"Error: {e}")
+
     def _parse_schedule_time(self, flag: str, value: str) -> str:
         """Parse scheduling flag+value into an ISO datetime string.
 
@@ -1872,7 +1939,8 @@ class UpworkBot:
                 "/admin_users - List all users\n"
                 "/admin_drafts - Proposal draft activity\n"
                 "/promo - Manage promo codes\n"
-                "/announce - Broadcast announcements\n\n"
+                "/announce - Broadcast announcements\n"
+                "/gift - Gift subscription to a user\n\n"
             )
         
         help_text += (

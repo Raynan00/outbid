@@ -338,54 +338,36 @@ class BillingService:
             promo = await db_manager.get_user_promo(telegram_id)
             is_promo_payment = promo and promo.get('applies_to') in ['monthly', 'all']
 
+            # Build common session params
+            session_params = {
+                'mode': 'subscription',
+                'line_items': [{
+                    'price': config.STRIPE_PRICE_ID_MONTHLY,
+                    'quantity': 1
+                }],
+                'client_reference_id': str(telegram_id),
+                'metadata': {
+                    'telegram_id': telegram_id,
+                    'plan': 'monthly'
+                },
+                'success_url': success_url or f"{config.WEBHOOK_BASE_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
+                'cancel_url': cancel_url or f"{config.WEBHOOK_BASE_URL}/payment/cancel"
+            }
+
             if is_promo_payment:
-                # Promo payment: one-time payment with discounted amount
+                # Create a Stripe coupon for the discount (first month only)
                 discount_percent = promo.get('discount_percent', 0)
-                # Calculate discounted amount in cents
-                original_amount_cents = int(config.GLOBAL_PRICE_MONTHLY_USD * 100)
-                discounted_amount_cents = int(original_amount_cents * (100 - discount_percent) / 100)
-
-                logger.info(f"Applied {discount_percent}% promo discount for Stripe user {telegram_id}: ${config.GLOBAL_PRICE_MONTHLY_USD} -> ${discounted_amount_cents/100}")
-
-                session = stripe.checkout.Session.create(
-                    mode='payment',  # One-time payment for promo users
-                    line_items=[{
-                        'price_data': {
-                            'currency': 'usd',
-                            'unit_amount': discounted_amount_cents,
-                            'product_data': {
-                                'name': 'Monthly Pro (First Month - Promo)',
-                                'description': f'{discount_percent}% discount applied'
-                            }
-                        },
-                        'quantity': 1
-                    }],
-                    client_reference_id=str(telegram_id),
-                    metadata={
-                        'telegram_id': telegram_id,
-                        'plan': 'monthly',
-                        'is_promo_payment': True,
-                        'promo_code': promo.get('code')
-                    },
-                    success_url=success_url or f"{config.WEBHOOK_BASE_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
-                    cancel_url=cancel_url or f"{config.WEBHOOK_BASE_URL}/payment/cancel"
+                coupon = stripe.Coupon.create(
+                    percent_off=discount_percent,
+                    duration='once',
+                    name=f"Promo {promo.get('code')} - {discount_percent}% off first month"
                 )
-            else:
-                # Regular subscription
-                session = stripe.checkout.Session.create(
-                    mode='subscription',
-                    line_items=[{
-                        'price': config.STRIPE_PRICE_ID_MONTHLY,
-                        'quantity': 1
-                    }],
-                    client_reference_id=str(telegram_id),
-                    metadata={
-                        'telegram_id': telegram_id,
-                        'plan': 'monthly'
-                    },
-                    success_url=success_url or f"{config.WEBHOOK_BASE_URL}/payment/success?session_id={{CHECKOUT_SESSION_ID}}",
-                    cancel_url=cancel_url or f"{config.WEBHOOK_BASE_URL}/payment/cancel"
-                )
+                session_params['discounts'] = [{'coupon': coupon.id}]
+                session_params['metadata']['promo_code'] = promo.get('code')
+
+                logger.info(f"Applied {discount_percent}% promo coupon for Stripe user {telegram_id} (coupon: {coupon.id})")
+
+            session = stripe.checkout.Session.create(**session_params)
 
             logger.info(f"Stripe session created for user {telegram_id}: {session.id} (promo: {is_promo_payment})")
             return session.url, session.id
