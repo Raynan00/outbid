@@ -130,8 +130,26 @@ async def get_sqlite_columns(db, table_name):
     return [col[1] for col in columns]
 
 
+BATCH_SIZE = 50000
+
+
+def convert_batch(rows, bool_indices, datetime_indices):
+    """Convert booleans and datetimes for a batch of rows."""
+    if not bool_indices and not datetime_indices:
+        return [tuple(row) for row in rows]
+    converted = []
+    for row in rows:
+        row_list = list(row)
+        for idx in bool_indices:
+            row_list[idx] = convert_bool(row_list[idx])
+        for idx in datetime_indices:
+            row_list[idx] = convert_datetime(row_list[idx])
+        converted.append(tuple(row_list))
+    return converted
+
+
 async def migrate_table(sqlite_db, pg_conn, table_def):
-    """Migrate a single table from SQLite to PostgreSQL."""
+    """Migrate a single table from SQLite to PostgreSQL in batches."""
     table_name = table_def['name']
     expected_columns = table_def['columns']
     bool_columns = set(table_def['bool_columns'])
@@ -152,58 +170,65 @@ async def migrate_table(sqlite_db, pg_conn, table_def):
     if missing:
         logger.info(f"  Table '{table_name}' missing columns in SQLite (will use defaults): {missing}")
 
-    # Read all rows from SQLite
+    # Get row count first
     col_list = ', '.join(columns)
-    cursor = await sqlite_db.execute(f"SELECT {col_list} FROM {table_name}")
-    rows = await cursor.fetchall()
+    count_cursor = await sqlite_db.execute(f"SELECT COUNT(*) FROM {table_name}")
+    total_count = (await count_cursor.fetchone())[0]
 
-    if not rows:
+    if total_count == 0:
         logger.info(f"  Table '{table_name}': 0 rows (empty)")
         return 0
 
-    # Convert booleans and datetimes
+    # Precompute conversion indices
     datetime_columns = set(table_def.get('datetime_columns', []))
     bool_indices = [i for i, c in enumerate(columns) if c in bool_columns]
     datetime_indices = [i for i, c in enumerate(columns) if c in datetime_columns]
-    if bool_indices or datetime_indices:
-        converted = []
-        for row in rows:
-            row_list = list(row)
-            for idx in bool_indices:
-                row_list[idx] = convert_bool(row_list[idx])
-            for idx in datetime_indices:
-                row_list[idx] = convert_datetime(row_list[idx])
-            converted.append(tuple(row_list))
-        rows = converted
 
-    # Bulk insert into Postgres using copy_records_to_table for speed
+    # Migrate in batches
     start = time.time()
-    try:
-        await pg_conn.copy_records_to_table(
-            table_name,
-            records=rows,
-            columns=columns,
+    total_inserted = 0
+    offset = 0
+
+    while offset < total_count:
+        cursor = await sqlite_db.execute(
+            f"SELECT {col_list} FROM {table_name} LIMIT {BATCH_SIZE} OFFSET {offset}"
         )
-    except Exception as e:
-        # Fallback to individual inserts if COPY fails (e.g. type mismatches)
-        logger.warning(f"  COPY failed for '{table_name}': {e}. Falling back to INSERT...")
-        placeholders = ', '.join(f'${i+1}' for i in range(len(columns)))
-        col_names = ', '.join(columns)
-        query = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
-        inserted = 0
-        for row in rows:
-            try:
-                await pg_conn.execute(query, *row)
-                inserted += 1
-            except Exception as row_err:
-                logger.error(f"  Failed to insert row in '{table_name}': {row_err}")
-        elapsed = time.time() - start
-        logger.info(f"  Table '{table_name}': {inserted}/{len(rows)} rows (fallback INSERT, {elapsed:.1f}s)")
-        return inserted
+        rows = await cursor.fetchall()
+        if not rows:
+            break
+
+        batch = convert_batch(rows, bool_indices, datetime_indices)
+        del rows  # free memory
+
+        try:
+            await pg_conn.copy_records_to_table(
+                table_name,
+                records=batch,
+                columns=columns,
+            )
+            total_inserted += len(batch)
+        except Exception as e:
+            logger.warning(f"  COPY failed for '{table_name}' batch at offset {offset}: {e}. Falling back to INSERT...")
+            placeholders = ', '.join(f'${i+1}' for i in range(len(columns)))
+            col_names = ', '.join(columns)
+            query = f"INSERT INTO {table_name} ({col_names}) VALUES ({placeholders}) ON CONFLICT DO NOTHING"
+            for row in batch:
+                try:
+                    await pg_conn.execute(query, *row)
+                    total_inserted += 1
+                except Exception as row_err:
+                    logger.error(f"  Failed to insert row in '{table_name}': {row_err}")
+
+        del batch  # free memory
+        offset += BATCH_SIZE
+
+        if total_count > BATCH_SIZE:
+            elapsed = time.time() - start
+            logger.info(f"  Table '{table_name}': {total_inserted}/{total_count} rows ({elapsed:.1f}s)")
 
     elapsed = time.time() - start
-    logger.info(f"  Table '{table_name}': {len(rows)} rows ({elapsed:.1f}s)")
-    return len(rows)
+    logger.info(f"  Table '{table_name}': {total_inserted} rows total ({elapsed:.1f}s)")
+    return total_inserted
 
 
 async def reset_sequences(pg_conn):
