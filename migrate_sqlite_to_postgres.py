@@ -285,7 +285,7 @@ async def main():
             total_rows += count
 
         # Re-enable FK constraints
-        await pg_conn.execute("SET session_replication_role = 'DEFAULT'")
+        await pg_conn.execute("SET session_replication_role = 'origin'")
         logger.info("FK constraints re-enabled")
 
         # Reset sequences
