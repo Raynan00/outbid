@@ -2640,42 +2640,6 @@ class UpworkBot:
                 reply_markup=reply_markup
             )
         
-        elif query.data.startswith("budget_"):
-            # Parse budget range: budget_MIN_MAX
-            parts = query.data.split("_")
-            if len(parts) == 3:
-                min_budget = int(parts[1])
-                max_budget = int(parts[2])
-                await db_manager.update_user_filters(user_id, min_budget=min_budget, max_budget=max_budget)
-                
-                if max_budget >= 999999:
-                    budget_text = f"${min_budget}+" if min_budget > 0 else "Any"
-                else:
-                    budget_text = f"${min_budget} - ${max_budget}"
-                
-                await query.edit_message_text(
-                    text=f"Fixed-price budget filter updated to: {budget_text}\n\n"
-                    "Use /settings to view all settings."
-                )
-
-        elif query.data.startswith("hourly_"):
-            # Parse hourly range: hourly_MIN_MAX
-            parts = query.data.split("_")
-            if len(parts) == 3:
-                min_hourly = int(parts[1])
-                max_hourly = int(parts[2])
-                await db_manager.update_user_filters(user_id, min_hourly=min_hourly, max_hourly=max_hourly)
-
-                if max_hourly >= 999:
-                    hourly_text = f"${min_hourly}+/hr" if min_hourly > 0 else "Any"
-                else:
-                    hourly_text = f"${min_hourly} - ${max_hourly}/hr"
-
-                await query.edit_message_text(
-                    text=f"Hourly rate filter updated to: {hourly_text}\n\n"
-                    "Use /settings to view all settings."
-                )
-
         elif query.data == "budget_custom":
             await db_manager.set_user_state(user_id, "CUSTOM_BUDGET")
             context.user_data['state'] = CUSTOM_BUDGET
@@ -2699,6 +2663,42 @@ class UpworkBot:
                 "  35-75 - for $35 to $75/hr\n\n"
                 "Or /cancel to go back."
             )
+
+        elif query.data.startswith("budget_"):
+            # Parse budget range: budget_MIN_MAX
+            parts = query.data.split("_")
+            if len(parts) == 3:
+                min_budget = int(parts[1])
+                max_budget = int(parts[2])
+                await db_manager.update_user_filters(user_id, min_budget=min_budget, max_budget=max_budget)
+
+                if max_budget >= 999999:
+                    budget_text = f"${min_budget}+" if min_budget > 0 else "Any"
+                else:
+                    budget_text = f"${min_budget} - ${max_budget}"
+
+                await query.edit_message_text(
+                    text=f"Fixed-price budget filter updated to: {budget_text}\n\n"
+                    "Use /settings to view all settings."
+                )
+
+        elif query.data.startswith("hourly_"):
+            # Parse hourly range: hourly_MIN_MAX
+            parts = query.data.split("_")
+            if len(parts) == 3:
+                min_hourly = int(parts[1])
+                max_hourly = int(parts[2])
+                await db_manager.update_user_filters(user_id, min_hourly=min_hourly, max_hourly=max_hourly)
+
+                if max_hourly >= 999:
+                    hourly_text = f"${min_hourly}+/hr" if min_hourly > 0 else "Any"
+                else:
+                    hourly_text = f"${min_hourly} - ${max_hourly}/hr"
+
+                await query.edit_message_text(
+                    text=f"Hourly rate filter updated to: {hourly_text}\n\n"
+                    "Use /settings to view all settings."
+                )
 
         elif query.data == "update_experience":
             # Show experience level options (multi-select would require more complex state)
