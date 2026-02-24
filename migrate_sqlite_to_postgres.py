@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 import time
+from datetime import datetime
 
 import aiosqlite
 import asyncpg
@@ -33,6 +34,18 @@ def convert_bool(value):
     return bool(value)
 
 
+def convert_datetime(value):
+    """Convert SQLite datetime string to Python datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value))
+    except (ValueError, TypeError):
+        return None
+
+
 # Table definitions: (table_name, columns, has_serial_id)
 # has_serial_id=True means we need to reset the sequence after bulk insert
 TABLES = [
@@ -41,6 +54,7 @@ TABLES = [
         'columns': ['id', 'timestamp', 'title', 'link'],
         'has_serial_id': False,
         'bool_columns': [],
+        'datetime_columns': ['timestamp'],
     },
     {
         'name': 'users',
@@ -55,48 +69,56 @@ TABLES = [
         ],
         'has_serial_id': True,
         'bool_columns': ['is_paid', 'is_auto_renewal'],
+        'datetime_columns': ['subscription_expiry', 'created_at', 'updated_at'],
     },
     {
         'name': 'referrals',
         'columns': ['id', 'referrer_id', 'referred_id', 'referral_code', 'status', 'created_at', 'activated_at'],
         'has_serial_id': True,
         'bool_columns': [],
+        'datetime_columns': ['created_at', 'activated_at'],
     },
     {
         'name': 'jobs',
         'columns': ['id', 'title', 'link', 'description', 'tags', 'budget', 'published', 'created_at'],
         'has_serial_id': False,
         'bool_columns': [],
+        'datetime_columns': ['created_at'],
     },
     {
         'name': 'proposal_drafts',
         'columns': ['id', 'user_id', 'job_id', 'draft_count', 'strategy_count', 'last_generated_at'],
         'has_serial_id': True,
         'bool_columns': [],
+        'datetime_columns': ['last_generated_at'],
     },
     {
         'name': 'revealed_jobs',
         'columns': ['id', 'user_id', 'job_id', 'proposal_text', 'revealed_at'],
         'has_serial_id': True,
         'bool_columns': [],
+        'datetime_columns': ['revealed_at'],
     },
     {
         'name': 'alerts_sent',
         'columns': ['id', 'job_id', 'user_id', 'sent_at', 'alert_type'],
         'has_serial_id': True,
         'bool_columns': [],
+        'datetime_columns': ['sent_at'],
     },
     {
         'name': 'promo_codes',
         'columns': ['id', 'code', 'discount_percent', 'applies_to', 'max_uses', 'times_used', 'conversions', 'is_active', 'created_at'],
         'has_serial_id': True,
         'bool_columns': ['is_active'],
+        'datetime_columns': ['created_at'],
     },
     {
         'name': 'announcements',
         'columns': ['id', 'message', 'target', 'scheduled_at', 'sent_at', 'status', 'sent_count', 'failed_count', 'blocked_count', 'created_by', 'created_at'],
         'has_serial_id': True,
         'bool_columns': [],
+        'datetime_columns': ['scheduled_at', 'sent_at', 'created_at'],
     },
 ]
 
@@ -139,16 +161,23 @@ async def migrate_table(sqlite_db, pg_conn, table_def):
         logger.info(f"  Table '{table_name}': 0 rows (empty)")
         return 0
 
-    # Convert booleans
+    # Convert booleans and datetimes
+    datetime_columns = set(table_def.get('datetime_columns', []))
     bool_indices = [i for i, c in enumerate(columns) if c in bool_columns]
-    if bool_indices:
+    datetime_indices = [i for i, c in enumerate(columns) if c in datetime_columns]
+    if bool_indices or datetime_indices:
         converted = []
         for row in rows:
             row_list = list(row)
             for idx in bool_indices:
                 row_list[idx] = convert_bool(row_list[idx])
+            for idx in datetime_indices:
+                row_list[idx] = convert_datetime(row_list[idx])
             converted.append(tuple(row_list))
         rows = converted
+
+    # Truncate target table first (makes re-runs safe after partial migration)
+    await pg_conn.execute(f"TRUNCATE {table_name} CASCADE")
 
     # Bulk insert into Postgres using copy_records_to_table for speed
     start = time.time()
