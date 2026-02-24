@@ -1,9 +1,9 @@
 """
 Database operations for Upwork First Responder Bot.
-Handles seen jobs tracking and user management using async SQLite.
+Handles seen jobs tracking and user management using async PostgreSQL.
 """
 
-import aiosqlite
+import asyncpg
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -12,67 +12,70 @@ from config import config
 
 logger = logging.getLogger(__name__)
 
+
 class DatabaseManager:
-    """Async database manager for the Upwork bot."""
+    """Async database manager for the Upwork bot using PostgreSQL."""
 
-    def __init__(self, db_path: str = config.DATABASE_PATH):
-        self.db_path = db_path
-        self._db: Optional[aiosqlite.Connection] = None
+    def __init__(self, database_url: str = None):
+        self.database_url = database_url or config.DATABASE_URL
+        self._pool: Optional[asyncpg.Pool] = None
 
-    async def _get_db(self) -> aiosqlite.Connection:
-        """Get or create a persistent database connection."""
-        if self._db is None:
-            self._db = await aiosqlite.connect(self.db_path)
-            # Enable WAL mode for better concurrent read performance
-            await self._db.execute('PRAGMA journal_mode=WAL')
-            await self._db.execute('PRAGMA synchronous=NORMAL')
-            logger.info("Persistent database connection established")
-        return self._db
+    async def _get_pool(self) -> asyncpg.Pool:
+        """Get or create a connection pool."""
+        if self._pool is None:
+            self._pool = await asyncpg.create_pool(
+                self.database_url,
+                min_size=config.DATABASE_POOL_MIN,
+                max_size=config.DATABASE_POOL_MAX,
+            )
+            logger.info("Database connection pool created")
+        return self._pool
 
     @asynccontextmanager
     async def _connect(self):
-        """Drop-in replacement for aiosqlite.connect() that reuses a persistent connection."""
-        db = await self._get_db()
-        try:
-            yield db
-        except (aiosqlite.OperationalError, aiosqlite.DatabaseError):
-            # Connection broken - reset so next call reconnects
-            logger.warning("Database connection error, will reconnect on next call")
-            self._db = None
-            raise
+        """Acquire a connection from the pool."""
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            yield conn
 
     async def close(self):
-        """Close the persistent database connection."""
-        if self._db is not None:
+        """Close the database connection pool."""
+        if self._pool is not None:
             try:
-                await self._db.close()
-                logger.info("Database connection closed")
+                await self._pool.close()
+                logger.info("Database connection pool closed")
             except Exception as e:
-                logger.error(f"Error closing database: {e}")
+                logger.error(f"Error closing database pool: {e}")
             finally:
-                self._db = None
+                self._pool = None
+
+    @staticmethod
+    def _get_rowcount(result: str) -> int:
+        """Extract row count from asyncpg execute result string (e.g. 'DELETE 5')."""
+        try:
+            return int(result.split()[-1])
+        except (ValueError, IndexError):
+            return 0
 
     async def init_db(self) -> None:
         """Initialize database tables."""
-        async with self._connect() as db:
-            # Create seen_jobs table
-            await db.execute('''
+        async with self._connect() as conn:
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS seen_jobs (
                     id TEXT PRIMARY KEY,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     title TEXT,
                     link TEXT
                 )
             ''')
 
-            # Create users table
-            await db.execute('''
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    telegram_id INTEGER UNIQUE,
+                    id SERIAL PRIMARY KEY,
+                    telegram_id BIGINT UNIQUE,
                     keywords TEXT,
                     context TEXT,
-                    is_paid BOOLEAN DEFAULT 0,
+                    is_paid BOOLEAN DEFAULT FALSE,
                     state TEXT DEFAULT '',
                     current_job_id TEXT DEFAULT '',
                     referral_code TEXT,
@@ -80,80 +83,39 @@ class DatabaseManager:
                     min_budget INTEGER DEFAULT 0,
                     max_budget INTEGER DEFAULT 999999,
                     experience_levels TEXT DEFAULT 'Entry,Intermediate,Expert',
-                    pause_start INTEGER DEFAULT NULL,
-                    pause_end INTEGER DEFAULT NULL,
+                    pause_start TEXT DEFAULT NULL,
+                    pause_end TEXT DEFAULT NULL,
                     country_code TEXT DEFAULT NULL,
                     subscription_plan TEXT DEFAULT 'scout',
                     subscription_expiry TEXT DEFAULT NULL,
-                    is_auto_renewal BOOLEAN DEFAULT 0,
+                    is_auto_renewal BOOLEAN DEFAULT FALSE,
                     payment_provider TEXT DEFAULT NULL,
                     email TEXT DEFAULT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    reveal_credits INTEGER DEFAULT 3,
+                    pending_reveal_job_id TEXT DEFAULT NULL,
+                    promo_code_used TEXT DEFAULT NULL,
+                    min_hourly INTEGER DEFAULT 0,
+                    max_hourly INTEGER DEFAULT 999,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            
-            # Add new columns if they don't exist (for existing databases)
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN min_budget INTEGER DEFAULT 0')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN max_budget INTEGER DEFAULT 999999')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN experience_levels TEXT DEFAULT "Entry,Intermediate,Expert"')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN pause_start INTEGER DEFAULT NULL')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN pause_end INTEGER DEFAULT NULL')
-            except: pass
-            # Subscription columns (monetization)
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN country_code TEXT DEFAULT NULL')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN subscription_plan TEXT DEFAULT "scout"')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN subscription_expiry TEXT DEFAULT NULL')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN is_auto_renewal BOOLEAN DEFAULT 0')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN payment_provider TEXT DEFAULT NULL')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN email TEXT DEFAULT NULL')
-            except: pass
-            # Reveal credits column
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN reveal_credits INTEGER DEFAULT 3')
-            except: pass
-            # Pending reveal job (for post-payment auto-reveal)
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN pending_reveal_job_id TEXT DEFAULT NULL')
-            except: pass
 
-            # Create referrals table
-            await db.execute('''
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS referrals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     referrer_id INTEGER,
                     referred_id INTEGER,
                     referral_code TEXT,
                     status TEXT DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    activated_at DATETIME,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    activated_at TIMESTAMP,
                     FOREIGN KEY (referrer_id) REFERENCES users (id),
                     FOREIGN KEY (referred_id) REFERENCES users (id)
                 )
             ''')
 
-            # Create jobs table for strategy mode
-            await db.execute('''
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     title TEXT,
@@ -162,79 +124,71 @@ class DatabaseManager:
                     tags TEXT,
                     budget TEXT,
                     published TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
-            # Create proposal_drafts table to track proposal generation per user per job
-            await db.execute('''
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS proposal_drafts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     user_id INTEGER,
                     job_id TEXT,
                     draft_count INTEGER DEFAULT 1,
                     strategy_count INTEGER DEFAULT 0,
-                    last_generated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id),
                     UNIQUE(user_id, job_id)
                 )
             ''')
-            
-            # Create revealed_jobs table to store revealed proposals for scout users
-            await db.execute('''
+
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS revealed_jobs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     user_id INTEGER,
                     job_id TEXT,
                     proposal_text TEXT,
-                    revealed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    revealed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users (id),
                     UNIQUE(user_id, job_id)
                 )
             ''')
-            
-            # Create indexes for faster lookups
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_proposal_drafts_user_job ON proposal_drafts(user_id, job_id)')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_revealed_jobs_user_job ON revealed_jobs(user_id, job_id)')
 
-            # Create indexes for better performance
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_seen_jobs_timestamp ON seen_jobs(timestamp)')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_users_paid ON users(is_paid)')
-            
-            # Track alerts sent to users
-            await db.execute('''
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_proposal_drafts_user_job ON proposal_drafts(user_id, job_id)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_revealed_jobs_user_job ON revealed_jobs(user_id, job_id)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_seen_jobs_timestamp ON seen_jobs(timestamp)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_users_paid ON users(is_paid)')
+
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS alerts_sent (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     job_id TEXT NOT NULL,
-                    user_id INTEGER NOT NULL,
-                    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    user_id BIGINT NOT NULL,
+                    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     alert_type TEXT DEFAULT 'proposal'
                 )
             ''')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_job ON alerts_sent(job_id)')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_user ON alerts_sent(user_id)')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_time ON alerts_sent(sent_at)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_job ON alerts_sent(job_id)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_user ON alerts_sent(user_id)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_alerts_sent_time ON alerts_sent(sent_at)')
 
-            # Create promo_codes table for promotional discounts
-            await db.execute('''
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS promo_codes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     code TEXT UNIQUE NOT NULL,
                     discount_percent INTEGER DEFAULT 20,
                     applies_to TEXT DEFAULT 'monthly',
                     max_uses INTEGER DEFAULT NULL,
                     times_used INTEGER DEFAULT 0,
                     conversions INTEGER DEFAULT 0,
-                    is_active BOOLEAN DEFAULT 1,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            await db.execute('CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)')
+            await conn.execute('CREATE INDEX IF NOT EXISTS idx_promo_codes_code ON promo_codes(code)')
 
-            # Create announcements table
-            await db.execute('''
+            await conn.execute('''
                 CREATE TABLE IF NOT EXISTS announcements (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     message TEXT NOT NULL,
                     target TEXT NOT NULL DEFAULT 'all',
                     scheduled_at TEXT DEFAULT NULL,
@@ -243,296 +197,229 @@ class DatabaseManager:
                     sent_count INTEGER DEFAULT 0,
                     failed_count INTEGER DEFAULT 0,
                     blocked_count INTEGER DEFAULT 0,
-                    created_by INTEGER NOT NULL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_by BIGINT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
-            # Add promo_code_used column to users table
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN promo_code_used TEXT DEFAULT NULL')
-            except: pass
-
-            # Add hourly rate filter columns to users table
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN min_hourly INTEGER DEFAULT 0')
-            except: pass
-            try:
-                await db.execute('ALTER TABLE users ADD COLUMN max_hourly INTEGER DEFAULT 999')
-            except: pass
-
-            await db.commit()
             logger.info("Database initialized successfully")
 
     # Seen Jobs Operations
     async def is_job_seen(self, job_id: str) -> bool:
         """Check if a job has been seen before."""
-        async with self._connect() as db:
-            cursor = await db.execute('SELECT id FROM seen_jobs WHERE id = ?', (job_id,))
-            result = await cursor.fetchone()
+        async with self._connect() as conn:
+            result = await conn.fetchrow('SELECT id FROM seen_jobs WHERE id = $1', job_id)
             return result is not None
 
     async def mark_job_seen(self, job_id: str, title: str, link: str) -> None:
         """Mark a job as seen."""
-        async with self._connect() as db:
-            await db.execute(
-                'INSERT OR REPLACE INTO seen_jobs (id, timestamp, title, link) VALUES (?, ?, ?, ?)',
-                (job_id, datetime.now(), title, link)
+        async with self._connect() as conn:
+            await conn.execute(
+                '''INSERT INTO seen_jobs (id, timestamp, title, link) VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (id) DO UPDATE SET timestamp = $2, title = $3, link = $4''',
+                job_id, datetime.now(), title, link
             )
-            await db.commit()
             logger.debug(f"Marked job as seen: {job_id}")
 
     async def get_recent_jobs(self, hours: int = 24) -> List[Dict[str, Any]]:
         """Get jobs seen in the last N hours."""
         cutoff_time = datetime.now() - timedelta(hours=hours)
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT id, title, link, timestamp FROM seen_jobs WHERE timestamp > ? ORDER BY timestamp DESC',
-                (cutoff_time,)
+        async with self._connect() as conn:
+            rows = await conn.fetch(
+                'SELECT id, title, link, timestamp FROM seen_jobs WHERE timestamp > $1 ORDER BY timestamp DESC',
+                cutoff_time
             )
-            rows = await cursor.fetchall()
 
-        jobs = []
-        for row in rows:
-            jobs.append({
-                'id': row[0],
-                'title': row[1],
-                'link': row[2],
-                'timestamp': row[3]
-            })
-        return jobs
+        return [{'id': row[0], 'title': row[1], 'link': row[2], 'timestamp': row[3]} for row in rows]
 
     async def cleanup_old_jobs(self, days: int = 30) -> int:
         """Remove jobs older than N days. Returns number of deleted records."""
         cutoff_time = datetime.now() - timedelta(days=days)
-        async with self._connect() as db:
-            cursor = await db.execute('DELETE FROM seen_jobs WHERE timestamp < ?', (cutoff_time,))
-            deleted_count = cursor.rowcount
-            await db.commit()
+        async with self._connect() as conn:
+            result = await conn.execute('DELETE FROM seen_jobs WHERE timestamp < $1', cutoff_time)
+            deleted_count = self._get_rowcount(result)
             logger.info(f"Cleaned up {deleted_count} old job records")
             return deleted_count
 
     # Alert Tracking Operations
     async def record_alert_sent(self, job_id: str, user_id: int, alert_type: str = 'proposal') -> None:
         """Record that an alert was sent to a user."""
-        async with self._connect() as db:
-            await db.execute(
-                'INSERT INTO alerts_sent (job_id, user_id, alert_type) VALUES (?, ?, ?)',
-                (job_id, user_id, alert_type)
+        async with self._connect() as conn:
+            await conn.execute(
+                'INSERT INTO alerts_sent (job_id, user_id, alert_type) VALUES ($1, $2, $3)',
+                job_id, user_id, alert_type
             )
-            await db.commit()
 
     async def get_alerts_stats(self) -> Dict[str, Any]:
         """Get alert statistics."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             stats = {}
-            
-            # Total alerts ever sent
-            cursor = await db.execute('SELECT COUNT(*) FROM alerts_sent')
-            stats['total_alerts'] = (await cursor.fetchone())[0]
-            
-            # Unique jobs sent (at least one user got it)
-            cursor = await db.execute('SELECT COUNT(DISTINCT job_id) FROM alerts_sent')
-            stats['unique_jobs_sent'] = (await cursor.fetchone())[0]
-            
-            # Alerts in last 24h
-            cursor = await db.execute('''
-                SELECT COUNT(*) FROM alerts_sent 
-                WHERE sent_at > datetime('now', '-24 hours')
-            ''')
-            stats['alerts_24h'] = (await cursor.fetchone())[0]
-            
-            # By type
-            cursor = await db.execute('''
-                SELECT alert_type, COUNT(*) FROM alerts_sent GROUP BY alert_type
-            ''')
-            stats['by_type'] = {row[0]: row[1] for row in await cursor.fetchall()}
-            
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM alerts_sent')
+            stats['total_alerts'] = result[0]
+
+            result = await conn.fetchrow('SELECT COUNT(DISTINCT job_id) FROM alerts_sent')
+            stats['unique_jobs_sent'] = result[0]
+
+            result = await conn.fetchrow(
+                "SELECT COUNT(*) FROM alerts_sent WHERE sent_at > NOW() - INTERVAL '24 hours'"
+            )
+            stats['alerts_24h'] = result[0]
+
+            rows = await conn.fetch('SELECT alert_type, COUNT(*) FROM alerts_sent GROUP BY alert_type')
+            stats['by_type'] = {row[0]: row[1] for row in rows}
+
             return stats
 
     # User Management Operations
     async def add_user(self, telegram_id: int, is_paid: bool = False) -> None:
         """Add or update a user."""
-        async with self._connect() as db:
-            # Check if user exists
-            cursor = await db.execute('SELECT reveal_credits FROM users WHERE telegram_id = ?', (telegram_id,))
-            existing = await cursor.fetchone()
-            
-            if existing:
-                # User exists - update is_paid only, preserve reveal_credits
-                await db.execute('''
-                    UPDATE users SET is_paid = ?, updated_at = ? WHERE telegram_id = ?
-                ''', (is_paid, datetime.now(), telegram_id))
-            else:
-                # New user - set reveal_credits to 3
-                await db.execute('''
-                    INSERT INTO users (telegram_id, is_paid, reveal_credits, updated_at)
-                    VALUES (?, ?, 3, ?)
-                ''', (telegram_id, is_paid, datetime.now()))
-            
-            await db.commit()
+        async with self._connect() as conn:
+            await conn.execute('''
+                INSERT INTO users (telegram_id, is_paid, reveal_credits, updated_at)
+                VALUES ($1, $2, 3, $3)
+                ON CONFLICT (telegram_id) DO UPDATE SET is_paid = $2, updated_at = $3
+            ''', telegram_id, is_paid, datetime.now())
+
             logger.info(f"Added/updated user: {telegram_id}, paid: {is_paid}")
 
     async def update_user_onboarding(self, telegram_id: int, keywords: str = None, context: str = None) -> None:
         """Update user onboarding information."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             updates = []
             params = []
+            idx = 1
 
             if keywords is not None:
-                updates.append("keywords = ?")
+                updates.append(f"keywords = ${idx}")
                 params.append(keywords)
+                idx += 1
 
             if context is not None:
-                updates.append("context = ?")
+                updates.append(f"context = ${idx}")
                 params.append(context)
+                idx += 1
 
             if updates:
-                updates.append("updated_at = ?")
-                params.extend([datetime.now(), telegram_id])
+                updates.append(f"updated_at = ${idx}")
+                params.append(datetime.now())
+                idx += 1
+                params.append(telegram_id)
 
-                query = f'''
-                    UPDATE users
-                    SET {', '.join(updates)}
-                    WHERE telegram_id = ?
-                '''
-                await db.execute(query, params)
-                await db.commit()
+                query = f"UPDATE users SET {', '.join(updates)} WHERE telegram_id = ${idx}"
+                await conn.execute(query, *params)
                 logger.info(f"Updated onboarding for user: {telegram_id}")
 
     async def is_user_authorized(self, telegram_id: int) -> bool:
-        """Check if user is authorized to receive job alerts.
-        
-        All users who have completed onboarding (have keywords) are authorized.
-        Payment status only affects whether proposals are blurred or full,
-        not whether they can receive alerts.
-        """
-        # Admins are always authorized
+        """Check if user is authorized to receive job alerts."""
         if config.is_admin(telegram_id):
             return True
 
-        # Check if user exists and has completed onboarding (has keywords)
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT keywords FROM users WHERE telegram_id = ?',
-                (telegram_id,)
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT keywords FROM users WHERE telegram_id = $1', telegram_id
             )
-            result = await cursor.fetchone()
 
-        # User is authorized if they have keywords set
         return result is not None and bool(result[0])
 
     # State Management Operations
     async def set_user_state(self, telegram_id: int, state: str, current_job_id: str = "") -> None:
         """Set user state for onboarding or strategy mode."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET state = ?, current_job_id = ?, updated_at = ? WHERE telegram_id = ?',
-                (state, current_job_id, datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET state = $1, current_job_id = $2, updated_at = $3 WHERE telegram_id = $4',
+                state, current_job_id, datetime.now(), telegram_id
             )
-            await db.commit()
             logger.debug(f"Set state for user {telegram_id}: {state}")
 
     async def clear_user_state(self, telegram_id: int) -> None:
         """Clear user state (end onboarding or strategy session)."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET state = "", current_job_id = "", updated_at = ? WHERE telegram_id = ?',
-                (datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                "UPDATE users SET state = '', current_job_id = '', updated_at = $1 WHERE telegram_id = $2",
+                datetime.now(), telegram_id
             )
-            await db.commit()
             logger.debug(f"Cleared state for user {telegram_id}")
 
     async def get_user_context(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Get user context including keywords, bio, and state for proposal generation."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT keywords, context, state, current_job_id, referral_code FROM users WHERE telegram_id = ?',
-                (telegram_id,)
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT keywords, context, state, current_job_id, referral_code FROM users WHERE telegram_id = $1',
+                telegram_id
             )
-            result = await cursor.fetchone()
 
         if not result:
             return None
 
-        keywords, context, state, current_job_id, referral_code = result
         return {
-            'keywords': keywords or '',
-            'context': context or '',
-            'state': state or '',
-            'current_job_id': current_job_id or '',
-            'referral_code': referral_code or ''
+            'keywords': result[0] or '',
+            'context': result[1] or '',
+            'state': result[2] or '',
+            'current_job_id': result[3] or '',
+            'referral_code': result[4] or ''
         }
 
     # Referral System Methods
     async def create_referral_code(self, telegram_id: int) -> str:
         """Generate and assign a unique referral code for a user."""
         import secrets
-        referral_code = secrets.token_hex(4).upper()  # 8-character code
+        referral_code = secrets.token_hex(4).upper()
 
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET referral_code = ?, updated_at = ? WHERE telegram_id = ?',
-                (referral_code, datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET referral_code = $1, updated_at = $2 WHERE telegram_id = $3',
+                referral_code, datetime.now(), telegram_id
             )
-            await db.commit()
 
         return referral_code
 
     async def process_referral(self, referrer_code: str, new_user_id: int) -> bool:
         """Process a referral when a new user signs up with a referral code."""
-        async with self._connect() as db:
-            # Find the referrer
-            cursor = await db.execute(
-                'SELECT id FROM users WHERE referral_code = ?',
-                (referrer_code,)
+        async with self._connect() as conn:
+            referrer_result = await conn.fetchrow(
+                'SELECT id FROM users WHERE referral_code = $1', referrer_code
             )
-            referrer_result = await cursor.fetchone()
 
             if not referrer_result:
-                return False  # Invalid referral code
+                return False
 
             referrer_id = referrer_result[0]
 
-            # Create referral record
-            await db.execute(
-                'INSERT INTO referrals (referrer_id, referred_id, referral_code, status) VALUES (?, ?, ?, ?)',
-                (referrer_id, new_user_id, referrer_code, 'pending')
-            )
-            await db.commit()
-
-            # Update new user's referred_by field
-            await db.execute(
-                'UPDATE users SET referred_by = ?, updated_at = ? WHERE id = ?',
-                (referrer_id, datetime.now(), new_user_id)
-            )
-            await db.commit()
+            async with conn.transaction():
+                await conn.execute(
+                    'INSERT INTO referrals (referrer_id, referred_id, referral_code, status) VALUES ($1, $2, $3, $4)',
+                    referrer_id, new_user_id, referrer_code, 'pending'
+                )
+                await conn.execute(
+                    'UPDATE users SET referred_by = $1, updated_at = $2 WHERE id = $3',
+                    referrer_id, datetime.now(), new_user_id
+                )
 
         return True
 
     async def activate_referral(self, user_id: int) -> None:
         """Mark a referral as activated when user completes payment."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE referrals SET status = ?, activated_at = ? WHERE referred_id = ?',
-                ('activated', datetime.now(), user_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE referrals SET status = $1, activated_at = $2 WHERE referred_id = $3',
+                'activated', datetime.now(), user_id
             )
-            await db.commit()
 
     async def get_referral_stats(self, telegram_id: int) -> Dict[str, int]:
         """Get referral statistics for a user."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT COUNT(*) FROM referrals WHERE referrer_id = (SELECT id FROM users WHERE telegram_id = ?) AND status = ?',
-                (telegram_id, 'activated')
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT COUNT(*) FROM referrals WHERE referrer_id = (SELECT id FROM users WHERE telegram_id = $1) AND status = $2',
+                telegram_id, 'activated'
             )
-            activated_count = (await cursor.fetchone())[0]
+            activated_count = result[0]
 
-            cursor = await db.execute(
-                'SELECT COUNT(*) FROM referrals WHERE referrer_id = (SELECT id FROM users WHERE telegram_id = ?)',
-                (telegram_id,)
+            result = await conn.fetchrow(
+                'SELECT COUNT(*) FROM referrals WHERE referrer_id = (SELECT id FROM users WHERE telegram_id = $1)',
+                telegram_id
             )
-            total_count = (await cursor.fetchone())[0]
+            total_count = result[0]
 
         return {
             'total_referrals': total_count,
@@ -543,76 +430,62 @@ class DatabaseManager:
     # Promo Code System
     async def get_promo_code(self, code: str) -> Optional[Dict[str, Any]]:
         """Get promo code details if valid and active."""
-        async with self._connect() as db:
-            cursor = await db.execute(
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
                 '''SELECT code, discount_percent, applies_to, max_uses, times_used, is_active
-                   FROM promo_codes WHERE UPPER(code) = UPPER(?) AND is_active = 1''',
-                (code,)
+                   FROM promo_codes WHERE UPPER(code) = UPPER($1) AND is_active = TRUE''',
+                code
             )
-            result = await cursor.fetchone()
 
         if not result:
             return None
 
-        code, discount_percent, applies_to, max_uses, times_used, is_active = result
-
-        # Check if max uses exceeded
-        if max_uses is not None and times_used >= max_uses:
+        if result[3] is not None and result[4] >= result[3]:
             return None
 
         return {
-            'code': code,
-            'discount_percent': discount_percent,
-            'applies_to': applies_to,
-            'max_uses': max_uses,
-            'times_used': times_used
+            'code': result[0],
+            'discount_percent': result[1],
+            'applies_to': result[2],
+            'max_uses': result[3],
+            'times_used': result[4]
         }
 
     async def apply_promo_code(self, telegram_id: int, code: str) -> Optional[Dict[str, Any]]:
-        """
-        Apply a promo code to a user. Returns promo details if successful, None otherwise.
-        Only applies if user hasn't used a promo code before.
-        """
-        # Check if user already has a promo code
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT promo_code_used FROM users WHERE telegram_id = ?',
-                (telegram_id,)
-            )
-            result = await cursor.fetchone()
-
-            if result and result[0]:
-                return None  # User already used a promo code
-
-        # Check if promo code is valid
+        """Apply a promo code to a user. Returns promo details if successful."""
         promo = await self.get_promo_code(code)
         if not promo:
             return None
 
-        # Apply promo code to user
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET promo_code_used = ?, updated_at = ? WHERE telegram_id = ?',
-                (promo['code'], datetime.now(), telegram_id)
-            )
-            # Increment times_used
-            await db.execute(
-                'UPDATE promo_codes SET times_used = times_used + 1 WHERE UPPER(code) = UPPER(?)',
-                (code,)
-            )
-            await db.commit()
+        async with self._connect() as conn:
+            async with conn.transaction():
+                # Check user hasn't already used a promo (inside transaction to prevent race)
+                result = await conn.fetchrow(
+                    'SELECT promo_code_used FROM users WHERE telegram_id = $1 FOR UPDATE',
+                    telegram_id
+                )
+
+                if result and result[0]:
+                    return None
+
+                await conn.execute(
+                    'UPDATE users SET promo_code_used = $1, updated_at = $2 WHERE telegram_id = $3',
+                    promo['code'], datetime.now(), telegram_id
+                )
+                await conn.execute(
+                    'UPDATE promo_codes SET times_used = times_used + 1 WHERE UPPER(code) = UPPER($1)',
+                    code
+                )
 
         logger.info(f"Applied promo code {promo['code']} to user {telegram_id}")
         return promo
 
     async def get_user_promo(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Get the promo code a user has applied (if any)."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT promo_code_used FROM users WHERE telegram_id = ?',
-                (telegram_id,)
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT promo_code_used FROM users WHERE telegram_id = $1', telegram_id
             )
-            result = await cursor.fetchone()
 
         if not result or not result[0]:
             return None
@@ -620,24 +493,22 @@ class DatabaseManager:
         return await self.get_promo_code(result[0])
 
     async def increment_promo_conversion(self, code: str) -> None:
-        """Increment the conversion count for a promo code (when user becomes premium)."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE promo_codes SET conversions = conversions + 1 WHERE UPPER(code) = UPPER(?)',
-                (code,)
+        """Increment the conversion count for a promo code."""
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE promo_codes SET conversions = conversions + 1 WHERE UPPER(code) = UPPER($1)',
+                code
             )
-            await db.commit()
             logger.info(f"Recorded conversion for promo code {code}")
 
     async def get_promo_stats(self, code: str) -> Optional[Dict[str, Any]]:
         """Get statistics for a promo code."""
-        async with self._connect() as db:
-            cursor = await db.execute(
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
                 '''SELECT code, discount_percent, applies_to, max_uses, times_used, conversions, is_active, created_at
-                   FROM promo_codes WHERE UPPER(code) = UPPER(?)''',
-                (code,)
+                   FROM promo_codes WHERE UPPER(code) = UPPER($1)''',
+                code
             )
-            result = await cursor.fetchone()
 
         if not result:
             return None
@@ -656,13 +527,11 @@ class DatabaseManager:
     async def create_promo_code(self, code: str, discount_percent: int = 20, applies_to: str = 'monthly', max_uses: int = None) -> bool:
         """Create a new promo code."""
         try:
-            async with self._connect() as db:
-                await db.execute(
-                    '''INSERT INTO promo_codes (code, discount_percent, applies_to, max_uses)
-                       VALUES (?, ?, ?, ?)''',
-                    (code.upper(), discount_percent, applies_to, max_uses)
+            async with self._connect() as conn:
+                await conn.execute(
+                    'INSERT INTO promo_codes (code, discount_percent, applies_to, max_uses) VALUES ($1, $2, $3, $4)',
+                    code.upper(), discount_percent, applies_to, max_uses
                 )
-                await db.commit()
             logger.info(f"Created promo code {code.upper()} with {discount_percent}% discount")
             return True
         except Exception as e:
@@ -672,13 +541,11 @@ class DatabaseManager:
     async def delete_promo_code(self, code: str) -> bool:
         """Delete a promo code."""
         try:
-            async with self._connect() as db:
-                cursor = await db.execute(
-                    'DELETE FROM promo_codes WHERE UPPER(code) = UPPER(?)',
-                    (code,)
+            async with self._connect() as conn:
+                result = await conn.execute(
+                    'DELETE FROM promo_codes WHERE UPPER(code) = UPPER($1)', code
                 )
-                await db.commit()
-                if cursor.rowcount > 0:
+                if self._get_rowcount(result) > 0:
                     logger.info(f"Deleted promo code {code.upper()}")
                     return True
                 return False
@@ -686,14 +553,23 @@ class DatabaseManager:
             logger.error(f"Failed to delete promo code {code}: {e}")
             return False
 
+    async def get_all_promo_codes(self) -> list:
+        """Get all promo codes for admin listing."""
+        async with self._connect() as conn:
+            rows = await conn.fetch(
+                'SELECT code, discount_percent, times_used, conversions, is_active, created_at FROM promo_codes ORDER BY created_at DESC'
+            )
+            return [tuple(row.values()) for row in rows]
+
     # Job Storage for Strategy Mode
     async def store_job_for_strategy(self, job_data: Dict[str, Any]) -> None:
         """Store job data for potential strategy mode usage."""
-        async with self._connect() as db:
-            await db.execute('''
-                INSERT OR REPLACE INTO jobs (id, title, link, description, tags, budget, published)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
+        async with self._connect() as conn:
+            await conn.execute('''
+                INSERT INTO jobs (id, title, link, description, tags, budget, published)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (id) DO UPDATE SET title = $2, link = $3, description = $4, tags = $5, budget = $6, published = $7
+            ''',
                 job_data['id'],
                 job_data.get('title', ''),
                 job_data.get('link', ''),
@@ -701,17 +577,15 @@ class DatabaseManager:
                 ','.join(job_data.get('tags', [])),
                 job_data.get('budget', ''),
                 str(job_data.get('published', ''))
-            ))
-            await db.commit()
+            )
 
     async def get_job_for_strategy(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve job data for strategy mode."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT id, title, link, description, tags, budget, published FROM jobs WHERE id = ?',
-                (job_id,)
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT id, title, link, description, tags, budget, published FROM jobs WHERE id = $1',
+                job_id
             )
-            result = await cursor.fetchone()
 
         if not result:
             return None
@@ -729,57 +603,30 @@ class DatabaseManager:
     # Payment Activation
     async def activate_user_payment(self, telegram_id: int) -> None:
         """Activate user payment status."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET is_paid = 1, updated_at = ? WHERE telegram_id = ?',
-                (datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET is_paid = TRUE, updated_at = $1 WHERE telegram_id = $2',
+                datetime.now(), telegram_id
             )
-            await db.commit()
 
-            # Get user ID for referral processing
-            cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
-            user_result = await cursor.fetchone()
-            if user_result:
-                user_id = user_result[0]
+            result = await conn.fetchrow('SELECT id FROM users WHERE telegram_id = $1', telegram_id)
+            if result:
+                user_id = result[0]
                 await self.activate_referral(user_id)
 
     async def get_active_users(self) -> List[Dict[str, Any]]:
-        """Get all users who have completed onboarding (have keywords).
-        
-        Note: This returns ALL users with keywords, regardless of payment status.
-        Payment status only affects whether proposals are blurred or full - 
-        scouts still receive alerts with blurred content.
-        """
-        async with self._connect() as db:
-            # Return all users who have completed onboarding (have keywords)
-            # Payment status is checked separately in send_job_alert for blurring
-            cursor = await db.execute(
-                'SELECT telegram_id, keywords, created_at FROM users WHERE keywords IS NOT NULL AND keywords != ""'
+        """Get all users who have completed onboarding (have keywords)."""
+        async with self._connect() as conn:
+            rows = await conn.fetch(
+                "SELECT telegram_id, keywords, created_at FROM users WHERE keywords IS NOT NULL AND keywords != ''"
             )
-            rows = await cursor.fetchall()
 
-        users = []
-        for row in rows:
-            users.append({
-                'telegram_id': row[0],
-                'keywords': row[1] or '',
-                'created_at': row[2]
-            })
-        return users
+        return [{'telegram_id': row[0], 'keywords': row[1] or '', 'created_at': row[2]} for row in rows]
 
     async def get_all_users_for_broadcast(self) -> List[Dict[str, Any]]:
-        """Fetch all user data needed for broadcast filtering and alert prep in ONE query.
-
-        Returns all onboarded users with the fields needed for:
-        - Pause checking (pause_start)
-        - Budget filtering (min_budget, max_budget, min_hourly, max_hourly)
-        - Experience filtering (experience_levels)
-        - Keyword matching (keywords)
-        - Permission derivation (subscription_plan, subscription_expiry, is_auto_renewal, is_paid)
-        - Alert preparation (context, country_code, reveal_credits)
-        """
-        async with self._connect() as db:
-            cursor = await db.execute('''
+        """Fetch all user data needed for broadcast filtering and alert prep in ONE query."""
+        async with self._connect() as conn:
+            rows = await conn.fetch('''
                 SELECT telegram_id, keywords, context, is_paid,
                        min_budget, max_budget, experience_levels,
                        pause_start, country_code,
@@ -789,7 +636,6 @@ class DatabaseManager:
                 FROM users
                 WHERE keywords IS NOT NULL AND keywords != ''
             ''')
-            rows = await cursor.fetchall()
 
         users = []
         for row in rows:
@@ -816,150 +662,113 @@ class DatabaseManager:
     # Proposal Draft Tracking
     async def get_proposal_draft_count(self, telegram_id: int, job_id: str) -> Dict[str, int]:
         """Get proposal draft counts for a user and job."""
-        async with self._connect() as db:
-            # Get user ID
-            cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
-            user_result = await cursor.fetchone()
+        async with self._connect() as conn:
+            user_result = await conn.fetchrow('SELECT id FROM users WHERE telegram_id = $1', telegram_id)
             if not user_result:
                 return {'draft_count': 0, 'strategy_count': 0}
-            
+
             user_id = user_result[0]
-            
-            # Get draft counts
-            cursor = await db.execute(
-                'SELECT draft_count, strategy_count FROM proposal_drafts WHERE user_id = ? AND job_id = ?',
-                (user_id, job_id)
+
+            result = await conn.fetchrow(
+                'SELECT draft_count, strategy_count FROM proposal_drafts WHERE user_id = $1 AND job_id = $2',
+                user_id, job_id
             )
-            result = await cursor.fetchone()
-            
+
             if result:
                 return {'draft_count': result[0], 'strategy_count': result[1]}
             return {'draft_count': 0, 'strategy_count': 0}
 
     async def increment_proposal_draft(self, telegram_id: int, job_id: str, is_strategy: bool = False) -> int:
         """Increment proposal draft count for a user and job. Returns the new count."""
-        async with self._connect() as db:
-            # Get user ID
-            cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
-            user_result = await cursor.fetchone()
+        async with self._connect() as conn:
+            user_result = await conn.fetchrow('SELECT id FROM users WHERE telegram_id = $1', telegram_id)
             if not user_result:
                 return 0
-            
+
             user_id = user_result[0]
-            
-            # Check if record exists
-            cursor = await db.execute(
-                'SELECT draft_count, strategy_count FROM proposal_drafts WHERE user_id = ? AND job_id = ?',
-                (user_id, job_id)
-            )
-            result = await cursor.fetchone()
-            
-            if result:
-                # Update existing record
-                if is_strategy:
-                    new_strategy_count = result[1] + 1
-                    await db.execute(
-                        'UPDATE proposal_drafts SET strategy_count = ?, last_generated_at = ? WHERE user_id = ? AND job_id = ?',
-                        (new_strategy_count, datetime.now(), user_id, job_id)
-                    )
-                    await db.commit()
-                    return new_strategy_count
-                else:
-                    new_draft_count = result[0] + 1
-                    await db.execute(
-                        'UPDATE proposal_drafts SET draft_count = ?, last_generated_at = ? WHERE user_id = ? AND job_id = ?',
-                        (new_draft_count, datetime.now(), user_id, job_id)
-                    )
-                    await db.commit()
-                    return new_draft_count
+
+            if is_strategy:
+                row = await conn.fetchrow('''
+                    INSERT INTO proposal_drafts (user_id, job_id, draft_count, strategy_count)
+                    VALUES ($1, $2, 0, 1)
+                    ON CONFLICT (user_id, job_id) DO UPDATE SET
+                        strategy_count = proposal_drafts.strategy_count + 1,
+                        last_generated_at = CURRENT_TIMESTAMP
+                    RETURNING strategy_count
+                ''', user_id, job_id)
             else:
-                # Create new record
-                if is_strategy:
-                    await db.execute(
-                        'INSERT INTO proposal_drafts (user_id, job_id, draft_count, strategy_count) VALUES (?, ?, 0, 1)',
-                        (user_id, job_id)
-                    )
-                    await db.commit()
-                    return 1
-                else:
-                    await db.execute(
-                        'INSERT INTO proposal_drafts (user_id, job_id, draft_count, strategy_count) VALUES (?, ?, 1, 0)',
-                        (user_id, job_id)
-                    )
-                    await db.commit()
-                    return 1
+                row = await conn.fetchrow('''
+                    INSERT INTO proposal_drafts (user_id, job_id, draft_count, strategy_count)
+                    VALUES ($1, $2, 1, 0)
+                    ON CONFLICT (user_id, job_id) DO UPDATE SET
+                        draft_count = proposal_drafts.draft_count + 1,
+                        last_generated_at = CURRENT_TIMESTAMP
+                    RETURNING draft_count
+                ''', user_id, job_id)
+
+            return row[0] if row else 1
 
     # Database Statistics (for admin dashboard)
     async def get_database_stats(self) -> Dict[str, Any]:
         """Get comprehensive database statistics for admin dashboard."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             stats = {}
-            
-            # User statistics
-            cursor = await db.execute('SELECT COUNT(*) FROM users')
-            stats['total_users'] = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute('SELECT COUNT(*) FROM users WHERE is_paid = 1')
-            stats['paid_users'] = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute('SELECT COUNT(*) FROM users WHERE keywords IS NOT NULL AND keywords != ""')
-            stats['users_with_keywords'] = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute('SELECT COUNT(*) FROM users WHERE is_paid = 0')
-            stats['unpaid_users'] = (await cursor.fetchone())[0]
-            
-            # Job statistics
-            cursor = await db.execute('SELECT COUNT(*) FROM seen_jobs')
-            stats['total_jobs_seen'] = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute('SELECT COUNT(*) FROM jobs')
-            stats['jobs_stored'] = (await cursor.fetchone())[0]
-            
-            # Referral statistics
-            cursor = await db.execute('SELECT COUNT(*) FROM referrals')
-            stats['total_referrals'] = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute('SELECT COUNT(*) FROM referrals WHERE status = "activated"')
-            stats['activated_referrals'] = (await cursor.fetchone())[0]
-            
-            # Proposal draft statistics
-            cursor = await db.execute('SELECT COUNT(*) FROM proposal_drafts')
-            stats['total_proposal_drafts'] = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute('SELECT SUM(draft_count) FROM proposal_drafts')
-            result = await cursor.fetchone()
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM users')
+            stats['total_users'] = result[0]
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM users WHERE is_paid = TRUE')
+            stats['paid_users'] = result[0]
+
+            result = await conn.fetchrow("SELECT COUNT(*) FROM users WHERE keywords IS NOT NULL AND keywords != ''")
+            stats['users_with_keywords'] = result[0]
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM users WHERE is_paid = FALSE')
+            stats['unpaid_users'] = result[0]
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM seen_jobs')
+            stats['total_jobs_seen'] = result[0]
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM jobs')
+            stats['jobs_stored'] = result[0]
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM referrals')
+            stats['total_referrals'] = result[0]
+
+            result = await conn.fetchrow("SELECT COUNT(*) FROM referrals WHERE status = 'activated'")
+            stats['activated_referrals'] = result[0]
+
+            result = await conn.fetchrow('SELECT COUNT(*) FROM proposal_drafts')
+            stats['total_proposal_drafts'] = result[0]
+
+            result = await conn.fetchrow('SELECT SUM(draft_count) FROM proposal_drafts')
             stats['total_regular_drafts'] = result[0] or 0
-            
-            cursor = await db.execute('SELECT SUM(strategy_count) FROM proposal_drafts')
-            result = await cursor.fetchone()
+
+            result = await conn.fetchrow('SELECT SUM(strategy_count) FROM proposal_drafts')
             stats['total_strategy_drafts'] = result[0] or 0
-            
-            # Recent activity
-            cursor = await db.execute('''
-                SELECT COUNT(*) FROM seen_jobs 
-                WHERE timestamp > datetime('now', '-24 hours')
-            ''')
-            stats['jobs_last_24h'] = (await cursor.fetchone())[0]
-            
-            cursor = await db.execute('''
-                SELECT COUNT(*) FROM users 
-                WHERE created_at > datetime('now', '-7 days')
-            ''')
-            stats['new_users_7d'] = (await cursor.fetchone())[0]
-            
+
+            result = await conn.fetchrow(
+                "SELECT COUNT(*) FROM seen_jobs WHERE timestamp > NOW() - INTERVAL '24 hours'"
+            )
+            stats['jobs_last_24h'] = result[0]
+
+            result = await conn.fetchrow(
+                "SELECT COUNT(*) FROM users WHERE created_at > NOW() - INTERVAL '7 days'"
+            )
+            stats['new_users_7d'] = result[0]
+
             return stats
 
     async def get_all_users_summary(self) -> List[Dict[str, Any]]:
         """Get summary of all users for admin view."""
-        async with self._connect() as db:
-            cursor = await db.execute('''
-                SELECT telegram_id, keywords, is_paid, created_at, updated_at, 
+        async with self._connect() as conn:
+            rows = await conn.fetch('''
+                SELECT telegram_id, keywords, is_paid, created_at, updated_at,
                        min_budget, max_budget, experience_levels
                 FROM users
                 ORDER BY created_at DESC
             ''')
-            rows = await cursor.fetchall()
-            
+
             users = []
             for row in rows:
                 users.append({
@@ -976,27 +785,25 @@ class DatabaseManager:
 
     async def get_user_draft_summary(self, telegram_id: int = None) -> List[Dict[str, Any]]:
         """Get proposal draft summary, optionally filtered by user."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             if telegram_id:
-                # Get user ID
-                cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
-                user_result = await cursor.fetchone()
+                user_result = await conn.fetchrow('SELECT id FROM users WHERE telegram_id = $1', telegram_id)
                 if not user_result:
                     return []
                 user_id = user_result[0]
-                
-                cursor = await db.execute('''
+
+                rows = await conn.fetch('''
                     SELECT pd.job_id, pd.draft_count, pd.strategy_count, pd.last_generated_at,
                            j.title, u.telegram_id
                     FROM proposal_drafts pd
                     LEFT JOIN jobs j ON pd.job_id = j.id
                     LEFT JOIN users u ON pd.user_id = u.id
-                    WHERE pd.user_id = ?
+                    WHERE pd.user_id = $1
                     ORDER BY pd.last_generated_at DESC
                     LIMIT 50
-                ''', (user_id,))
+                ''', user_id)
             else:
-                cursor = await db.execute('''
+                rows = await conn.fetch('''
                     SELECT pd.job_id, pd.draft_count, pd.strategy_count, pd.last_generated_at,
                            j.title, u.telegram_id
                     FROM proposal_drafts pd
@@ -1005,8 +812,7 @@ class DatabaseManager:
                     ORDER BY pd.last_generated_at DESC
                     LIMIT 100
                 ''')
-            
-            rows = await cursor.fetchall()
+
             drafts = []
             for row in rows:
                 drafts.append({
@@ -1021,16 +827,15 @@ class DatabaseManager:
 
     async def get_user_info(self, telegram_id: int) -> Optional[Dict[str, Any]]:
         """Get detailed user information."""
-        async with self._connect() as db:
-            cursor = await db.execute(
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
                 '''SELECT telegram_id, keywords, context, is_paid, state, current_job_id,
                    created_at, updated_at, min_budget, max_budget, experience_levels,
                    pause_start, pause_end, country_code, subscription_plan, subscription_expiry,
                    is_auto_renewal, payment_provider, email, min_hourly, max_hourly
-                   FROM users WHERE telegram_id = ?''',
-                (telegram_id,)
+                   FROM users WHERE telegram_id = $1''',
+                telegram_id
             )
-            result = await cursor.fetchone()
 
         if not result:
             return None
@@ -1059,110 +864,120 @@ class DatabaseManager:
             'max_hourly': result[20] or 999,
         }
 
+    async def get_user_jobs_matched_count(self, telegram_id: int) -> int:
+        """Count alerts sent to a specific user."""
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT COUNT(*) FROM alerts_sent WHERE user_id = $1', telegram_id
+            )
+            return result[0] if result else 0
+
     # Budget and Filter Settings
     async def update_user_filters(self, telegram_id: int, min_budget: int = None,
                                    max_budget: int = None, experience_levels: List[str] = None,
                                    min_hourly: int = None, max_hourly: int = None) -> None:
         """Update user budget, hourly rate, and experience level filters."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             updates = []
             params = []
+            idx = 1
 
             if min_budget is not None:
-                updates.append("min_budget = ?")
+                updates.append(f"min_budget = ${idx}")
                 params.append(min_budget)
+                idx += 1
 
             if max_budget is not None:
-                updates.append("max_budget = ?")
+                updates.append(f"max_budget = ${idx}")
                 params.append(max_budget)
+                idx += 1
 
             if min_hourly is not None:
-                updates.append("min_hourly = ?")
+                updates.append(f"min_hourly = ${idx}")
                 params.append(min_hourly)
+                idx += 1
 
             if max_hourly is not None:
-                updates.append("max_hourly = ?")
+                updates.append(f"max_hourly = ${idx}")
                 params.append(max_hourly)
+                idx += 1
 
             if experience_levels is not None:
-                updates.append("experience_levels = ?")
+                updates.append(f"experience_levels = ${idx}")
                 params.append(','.join(experience_levels))
-            
+                idx += 1
+
             if updates:
-                updates.append("updated_at = ?")
-                params.extend([datetime.now(), telegram_id])
-                
-                query = f'UPDATE users SET {", ".join(updates)} WHERE telegram_id = ?'
-                await db.execute(query, params)
-                await db.commit()
+                updates.append(f"updated_at = ${idx}")
+                params.append(datetime.now())
+                idx += 1
+                params.append(telegram_id)
+
+                query = f"UPDATE users SET {', '.join(updates)} WHERE telegram_id = ${idx}"
+                await conn.execute(query, *params)
                 logger.info(f"Updated filters for user {telegram_id}")
 
     # Pause/Schedule Settings
     async def set_user_pause(self, telegram_id: int, hours: int) -> datetime:
         """Pause alerts for X hours. Returns the pause_until datetime."""
         pause_until = datetime.now() + timedelta(hours=hours)
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET pause_start = ?, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
-                (pause_until.isoformat(), datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET pause_start = $1, pause_end = NULL, updated_at = $2 WHERE telegram_id = $3',
+                pause_until.isoformat(), datetime.now(), telegram_id
             )
-            await db.commit()
             logger.info(f"Paused alerts for user {telegram_id} until {pause_until}")
         return pause_until
 
     async def set_user_pause_indefinite(self, telegram_id: int) -> None:
         """Pause alerts indefinitely until manually resumed."""
-        # Use year 9999 as "indefinite" marker
         pause_until = datetime(9999, 12, 31, 23, 59, 59)
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET pause_start = ?, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
-                (pause_until.isoformat(), datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET pause_start = $1, pause_end = NULL, updated_at = $2 WHERE telegram_id = $3',
+                pause_until.isoformat(), datetime.now(), telegram_id
             )
-            await db.commit()
             logger.info(f"Paused alerts indefinitely for user {telegram_id}")
 
     async def clear_user_pause(self, telegram_id: int) -> None:
         """Clear user pause (resume alerts)."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET pause_start = NULL, pause_end = NULL, updated_at = ? WHERE telegram_id = ?',
-                (datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET pause_start = NULL, pause_end = NULL, updated_at = $1 WHERE telegram_id = $2',
+                datetime.now(), telegram_id
             )
-            await db.commit()
             logger.info(f"Resumed alerts for user {telegram_id}")
 
     def is_user_paused(self, pause_until_str: str) -> bool:
         """Check if user is currently paused. pause_until_str is ISO format datetime."""
         if not pause_until_str:
             return False
-        
+
         try:
-            pause_until = datetime.fromisoformat(pause_until_str)
+            pause_until = datetime.fromisoformat(str(pause_until_str))
             return datetime.now() < pause_until
         except (ValueError, TypeError):
             return False
-    
+
     def get_pause_remaining(self, pause_until_str: str) -> str:
         """Get human-readable time remaining on pause."""
         if not pause_until_str:
             return None
-        
+
         try:
-            pause_until = datetime.fromisoformat(pause_until_str)
-            
-            # Check for indefinite pause (year 9999)
+            pause_until = datetime.fromisoformat(str(pause_until_str))
+
             if pause_until.year >= 9999:
                 return "Paused indefinitely"
-            
+
             remaining = pause_until - datetime.now()
-            
+
             if remaining.total_seconds() <= 0:
                 return None
-            
+
             hours = int(remaining.total_seconds() // 3600)
             minutes = int((remaining.total_seconds() % 3600) // 60)
-            
+
             if hours > 0:
                 return f"{hours}h {minutes}m remaining"
             else:
@@ -1171,116 +986,106 @@ class DatabaseManager:
             return None
 
     # ==================== SUBSCRIPTION MANAGEMENT ====================
-    
+
     async def update_user_country(self, telegram_id: int, country_code: str) -> None:
         """Update user's country code (NG or GLOBAL)."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET country_code = ?, updated_at = ? WHERE telegram_id = ?',
-                (country_code, datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET country_code = $1, updated_at = $2 WHERE telegram_id = $3',
+                country_code, datetime.now(), telegram_id
             )
-            await db.commit()
             logger.info(f"Updated country for user {telegram_id}: {country_code}")
 
     async def update_user_email(self, telegram_id: int, email: str) -> None:
         """Update user's email address (needed for Paystack)."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET email = ?, updated_at = ? WHERE telegram_id = ?',
-                (email, datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET email = $1, updated_at = $2 WHERE telegram_id = $3',
+                email, datetime.now(), telegram_id
             )
-            await db.commit()
             logger.info(f"Updated email for user {telegram_id}")
 
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Get user info by email address (for Paystack subscription lookups)."""
-        async with self._connect() as db:
-            db.row_factory = aiosqlite.Row
-            cursor = await db.execute(
-                'SELECT telegram_id, email, subscription_plan FROM users WHERE email = ?',
-                (email,)
+        async with self._connect() as conn:
+            row = await conn.fetchrow(
+                'SELECT telegram_id, email, subscription_plan FROM users WHERE email = $1',
+                email
             )
-            row = await cursor.fetchone()
             if row:
                 return dict(row)
             return None
 
-    async def grant_subscription(self, telegram_id: int, plan: str, expiry: datetime, 
+    async def grant_subscription(self, telegram_id: int, plan: str, expiry: datetime,
                                   payment_provider: str, is_auto_renewal: bool = False) -> None:
         """Grant subscription to user after payment confirmation."""
-        async with self._connect() as db:
-            await db.execute('''
-                UPDATE users SET 
-                    subscription_plan = ?,
-                    subscription_expiry = ?,
-                    payment_provider = ?,
-                    is_auto_renewal = ?,
-                    is_paid = 1,
-                    updated_at = ?
-                WHERE telegram_id = ?
-            ''', (plan, expiry.isoformat(), payment_provider, is_auto_renewal, datetime.now(), telegram_id))
-            await db.commit()
+        async with self._connect() as conn:
+            await conn.execute('''
+                UPDATE users SET
+                    subscription_plan = $1,
+                    subscription_expiry = $2,
+                    payment_provider = $3,
+                    is_auto_renewal = $4,
+                    is_paid = TRUE,
+                    updated_at = $5
+                WHERE telegram_id = $6
+            ''', plan, expiry.isoformat(), payment_provider, is_auto_renewal, datetime.now(), telegram_id)
             logger.info(f"Granted {plan} subscription to user {telegram_id}, expires: {expiry}")
 
     async def downgrade_to_scout(self, telegram_id: int) -> None:
         """Downgrade user to scout plan (expired subscription)."""
-        async with self._connect() as db:
-            await db.execute('''
-                UPDATE users SET 
+        async with self._connect() as conn:
+            await conn.execute('''
+                UPDATE users SET
                     subscription_plan = 'scout',
                     subscription_expiry = NULL,
-                    is_auto_renewal = 0,
-                    is_paid = 0,
-                    updated_at = ?
-                WHERE telegram_id = ?
-            ''', (datetime.now(), telegram_id))
-            await db.commit()
+                    is_auto_renewal = FALSE,
+                    is_paid = FALSE,
+                    updated_at = $1
+                WHERE telegram_id = $2
+            ''', datetime.now(), telegram_id)
             logger.info(f"Downgraded user {telegram_id} to scout plan")
 
     async def set_auto_renewal(self, telegram_id: int, enabled: bool) -> None:
         """Set user's auto-renewal status."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET is_auto_renewal = ?, updated_at = ? WHERE telegram_id = ?',
-                (1 if enabled else 0, datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET is_auto_renewal = $1, updated_at = $2 WHERE telegram_id = $3',
+                enabled, datetime.now(), telegram_id
             )
-            await db.commit()
             logger.info(f"Set auto_renewal={enabled} for user {telegram_id}")
 
     async def check_subscription_expired(self, telegram_id: int) -> bool:
         """Check if user's subscription has expired. Returns True if expired."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT subscription_plan, subscription_expiry FROM users WHERE telegram_id = ?',
-                (telegram_id,)
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT subscription_plan, subscription_expiry FROM users WHERE telegram_id = $1',
+                telegram_id
             )
-            result = await cursor.fetchone()
-        
+
         if not result:
-            return True  # No user found, treat as expired
-        
+            return True
+
         plan, expiry_str = result
-        
-        # Scout plan never expires
+
         if plan == 'scout' or not expiry_str:
             return False
-        
+
         try:
-            expiry = datetime.fromisoformat(expiry_str)
+            expiry = datetime.fromisoformat(str(expiry_str))
             return datetime.now() > expiry
         except:
-            return True  # Invalid expiry, treat as expired
+            return True
 
     async def get_subscription_status(self, telegram_id: int) -> Dict[str, Any]:
         """Get user's current subscription status."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                '''SELECT subscription_plan, subscription_expiry, is_auto_renewal, 
-                   payment_provider, country_code FROM users WHERE telegram_id = ?''',
-                (telegram_id,)
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                '''SELECT subscription_plan, subscription_expiry, is_auto_renewal,
+                   payment_provider, country_code FROM users WHERE telegram_id = $1''',
+                telegram_id
             )
-            result = await cursor.fetchone()
-        
+
         if not result:
             return {
                 'plan': 'scout',
@@ -1291,22 +1096,22 @@ class DatabaseManager:
                 'is_active': False,
                 'days_remaining': 0
             }
-        
+
         plan, expiry_str, is_auto_renewal, payment_provider, country_code = result
-        
+
         is_active = False
         days_remaining = 0
-        
+
         if plan != 'scout' and expiry_str:
             try:
-                expiry = datetime.fromisoformat(expiry_str)
+                expiry = datetime.fromisoformat(str(expiry_str))
                 is_active = datetime.now() < expiry
                 if is_active:
                     delta = expiry - datetime.now()
                     days_remaining = delta.days + (1 if delta.seconds > 0 else 0)
             except:
                 pass
-        
+
         return {
             'plan': plan or 'scout',
             'expiry': expiry_str,
@@ -1321,21 +1126,20 @@ class DatabaseManager:
         """Get users whose subscriptions expire within the next N hours."""
         cutoff = datetime.now() + timedelta(hours=hours)
         now = datetime.now()
-        
-        async with self._connect() as db:
-            cursor = await db.execute('''
-                SELECT telegram_id, subscription_plan, subscription_expiry 
-                FROM users 
-                WHERE subscription_plan != 'scout' 
+
+        async with self._connect() as conn:
+            rows = await conn.fetch('''
+                SELECT telegram_id, subscription_plan, subscription_expiry
+                FROM users
+                WHERE subscription_plan != 'scout'
                 AND subscription_expiry IS NOT NULL
             ''')
-            rows = await cursor.fetchall()
-        
+
         expiring_users = []
         for row in rows:
             telegram_id, plan, expiry_str = row
             try:
-                expiry = datetime.fromisoformat(expiry_str)
+                expiry = datetime.fromisoformat(str(expiry_str))
                 if now < expiry <= cutoff:
                     expiring_users.append({
                         'telegram_id': telegram_id,
@@ -1345,186 +1149,158 @@ class DatabaseManager:
                     })
             except:
                 pass
-        
+
         return expiring_users
 
     # ==================== REVEAL CREDITS MANAGEMENT ====================
-    
+
     async def get_reveal_credits(self, telegram_id: int) -> int:
         """Get remaining reveal credits for a user."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT reveal_credits FROM users WHERE telegram_id = ?',
-                (telegram_id,)
+        async with self._connect() as conn:
+            result = await conn.fetchrow(
+                'SELECT reveal_credits FROM users WHERE telegram_id = $1', telegram_id
             )
-            result = await cursor.fetchone()
-            
+
             if result:
-                return result[0] if result[0] is not None else 3  # Default to 3 if NULL
-            return 3  # Default for new users
-    
+                return result[0] if result[0] is not None else 3
+            return 3
+
     async def use_reveal_credit(self, telegram_id: int, job_id: str, proposal_text: str) -> bool:
-        """
-        Use a reveal credit for a user and store the revealed proposal.
-        Returns True if credit was used successfully, False if no credits left.
-        """
-        async with self._connect() as db:
-            # Get user ID
-            cursor = await db.execute('SELECT id, reveal_credits FROM users WHERE telegram_id = ?', (telegram_id,))
-            user_result = await cursor.fetchone()
-            
-            if not user_result:
-                logger.error(f"User {telegram_id} not found")
-                return False
-            
-            user_id, current_credits = user_result
-            
-            # Check if user has credits
-            if current_credits is None:
-                current_credits = 3  # Default
-            if current_credits <= 0:
-                logger.warning(f"User {telegram_id} has no reveal credits left")
-                return False
-            
-            # Check if job already revealed
-            cursor = await db.execute(
-                'SELECT id FROM revealed_jobs WHERE user_id = ? AND job_id = ?',
-                (user_id, job_id)
-            )
-            existing = await cursor.fetchone()
-            
-            if existing:
-                # Already revealed - just return True (don't decrement credit)
-                logger.info(f"Job {job_id} already revealed for user {telegram_id}")
-                return True
-            
-            # Decrement credit
-            new_credits = current_credits - 1
-            await db.execute(
-                'UPDATE users SET reveal_credits = ?, updated_at = ? WHERE telegram_id = ?',
-                (new_credits, datetime.now(), telegram_id)
-            )
-            
-            # Store revealed proposal
-            await db.execute(
-                'INSERT INTO revealed_jobs (user_id, job_id, proposal_text) VALUES (?, ?, ?)',
-                (user_id, job_id, proposal_text)
-            )
-            
-            await db.commit()
+        """Use a reveal credit for a user and store the revealed proposal."""
+        async with self._connect() as conn:
+            async with conn.transaction():
+                # Lock the user row to prevent concurrent credit usage
+                user_result = await conn.fetchrow(
+                    'SELECT id, reveal_credits FROM users WHERE telegram_id = $1 FOR UPDATE',
+                    telegram_id
+                )
+
+                if not user_result:
+                    logger.error(f"User {telegram_id} not found")
+                    return False
+
+                user_id, current_credits = user_result
+
+                if current_credits is None:
+                    current_credits = 3
+                if current_credits <= 0:
+                    logger.warning(f"User {telegram_id} has no reveal credits left")
+                    return False
+
+                existing = await conn.fetchrow(
+                    'SELECT id FROM revealed_jobs WHERE user_id = $1 AND job_id = $2',
+                    user_id, job_id
+                )
+
+                if existing:
+                    logger.info(f"Job {job_id} already revealed for user {telegram_id}")
+                    return True
+
+                new_credits = current_credits - 1
+                await conn.execute(
+                    'UPDATE users SET reveal_credits = $1, updated_at = $2 WHERE telegram_id = $3',
+                    new_credits, datetime.now(), telegram_id
+                )
+                await conn.execute(
+                    'INSERT INTO revealed_jobs (user_id, job_id, proposal_text) VALUES ($1, $2, $3)',
+                    user_id, job_id, proposal_text
+                )
+
             logger.info(f"Used reveal credit for user {telegram_id}, job {job_id}. Credits remaining: {new_credits}")
             return True
-    
+
     async def is_job_revealed(self, telegram_id: int, job_id: str) -> bool:
         """Check if a job has already been revealed for a user."""
-        async with self._connect() as db:
-            # Get user ID
-            cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
-            user_result = await cursor.fetchone()
-            
+        async with self._connect() as conn:
+            user_result = await conn.fetchrow(
+                'SELECT id FROM users WHERE telegram_id = $1', telegram_id
+            )
+
             if not user_result:
                 return False
-            
+
             user_id = user_result[0]
-            
-            # Check if revealed
-            cursor = await db.execute(
-                'SELECT id FROM revealed_jobs WHERE user_id = ? AND job_id = ?',
-                (user_id, job_id)
+
+            result = await conn.fetchrow(
+                'SELECT id FROM revealed_jobs WHERE user_id = $1 AND job_id = $2',
+                user_id, job_id
             )
-            result = await cursor.fetchone()
             return result is not None
-    
+
     async def get_revealed_proposal(self, telegram_id: int, job_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get the stored proposal for a revealed job.
-        Returns None if job not revealed, or dict with proposal_text and revealed_at.
-        """
-        async with self._connect() as db:
-            # Get user ID
-            cursor = await db.execute('SELECT id FROM users WHERE telegram_id = ?', (telegram_id,))
-            user_result = await cursor.fetchone()
-            
+        """Get the stored proposal for a revealed job."""
+        async with self._connect() as conn:
+            user_result = await conn.fetchrow(
+                'SELECT id FROM users WHERE telegram_id = $1', telegram_id
+            )
+
             if not user_result:
                 return None
-            
+
             user_id = user_result[0]
-            
-            # Get revealed proposal
-            cursor = await db.execute(
-                'SELECT proposal_text, revealed_at FROM revealed_jobs WHERE user_id = ? AND job_id = ?',
-                (user_id, job_id)
+
+            result = await conn.fetchrow(
+                'SELECT proposal_text, revealed_at FROM revealed_jobs WHERE user_id = $1 AND job_id = $2',
+                user_id, job_id
             )
-            result = await cursor.fetchone()
-            
+
             if result:
                 return {
                     'proposal_text': result[0],
                     'revealed_at': result[1]
                 }
             return None
-    
+
     # ==================== PENDING REVEAL JOB (POST-PAYMENT AUTO-REVEAL) ====================
-    
+
     async def set_pending_reveal_job(self, telegram_id: int, job_id: str) -> None:
         """Store the job ID that triggered the paywall for auto-reveal after payment."""
-        async with self._connect() as db:
-            await db.execute(
-                'UPDATE users SET pending_reveal_job_id = ?, updated_at = ? WHERE telegram_id = ?',
-                (job_id, datetime.now(), telegram_id)
+        async with self._connect() as conn:
+            await conn.execute(
+                'UPDATE users SET pending_reveal_job_id = $1, updated_at = $2 WHERE telegram_id = $3',
+                job_id, datetime.now(), telegram_id
             )
-            await db.commit()
             logger.info(f"Set pending reveal job {job_id} for user {telegram_id}")
-    
+
     async def get_and_clear_pending_reveal_job(self, telegram_id: int) -> Optional[str]:
-        """
-        Get and clear the pending reveal job ID.
-        Returns the job_id if exists, None otherwise.
-        """
-        async with self._connect() as db:
-            cursor = await db.execute(
-                'SELECT pending_reveal_job_id FROM users WHERE telegram_id = ?',
-                (telegram_id,)
+        """Get and clear the pending reveal job ID."""
+        async with self._connect() as conn:
+            # Atomic read-and-clear: only one concurrent caller gets the job_id
+            result = await conn.fetchrow(
+                '''UPDATE users SET pending_reveal_job_id = NULL, updated_at = $1
+                   WHERE telegram_id = $2 AND pending_reveal_job_id IS NOT NULL
+                   RETURNING pending_reveal_job_id''',
+                datetime.now(), telegram_id
             )
-            result = await cursor.fetchone()
-            
+
             if result and result[0]:
-                job_id = result[0]
-                # Clear it
-                await db.execute(
-                    'UPDATE users SET pending_reveal_job_id = NULL, updated_at = ? WHERE telegram_id = ?',
-                    (datetime.now(), telegram_id)
-                )
-                await db.commit()
-                logger.info(f"Retrieved and cleared pending reveal job {job_id} for user {telegram_id}")
-                return job_id
+                logger.info(f"Retrieved and cleared pending reveal job {result[0]} for user {telegram_id}")
+                return result[0]
             return None
 
     # Announcement Operations
     async def create_announcement(self, message: str, target: str, created_by: int,
                                    scheduled_at: str = None) -> int:
         """Create a new announcement. Returns the announcement ID."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             status = 'pending' if scheduled_at else 'sending'
-            cursor = await db.execute(
+            row = await conn.fetchrow(
                 '''INSERT INTO announcements (message, target, scheduled_at, status, created_by)
-                   VALUES (?, ?, ?, ?, ?)''',
-                (message, target, scheduled_at, status, created_by)
+                   VALUES ($1, $2, $3, $4, $5) RETURNING id''',
+                message, target, scheduled_at, status, created_by
             )
-            await db.commit()
-            return cursor.lastrowid
+            return row[0]
 
     async def get_pending_announcements(self) -> List[Dict[str, Any]]:
         """Get scheduled announcements that are due to be sent."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             now = datetime.now().isoformat()
-            cursor = await db.execute(
+            rows = await conn.fetch(
                 '''SELECT id, message, target, scheduled_at, created_by
                    FROM announcements
-                   WHERE status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= ?''',
-                (now,)
+                   WHERE status = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= $1''',
+                now
             )
-            rows = await cursor.fetchall()
             return [{'id': r[0], 'message': r[1], 'target': r[2],
                      'scheduled_at': r[3], 'created_by': r[4]} for r in rows]
 
@@ -1532,63 +1308,61 @@ class DatabaseManager:
                                           sent_count: int = 0, failed_count: int = 0,
                                           blocked_count: int = 0) -> None:
         """Update announcement status and delivery stats."""
-        async with self._connect() as db:
+        async with self._connect() as conn:
             sent_at = datetime.now().isoformat() if status == 'sent' else None
-            await db.execute(
-                '''UPDATE announcements SET status = ?, sent_at = COALESCE(?, sent_at),
-                   sent_count = ?, failed_count = ?, blocked_count = ?
-                   WHERE id = ?''',
-                (status, sent_at, sent_count, failed_count, blocked_count, announcement_id)
+            await conn.execute(
+                '''UPDATE announcements SET status = $1, sent_at = COALESCE($2, sent_at),
+                   sent_count = $3, failed_count = $4, blocked_count = $5
+                   WHERE id = $6''',
+                status, sent_at, sent_count, failed_count, blocked_count, announcement_id
             )
-            await db.commit()
 
     async def get_announcement_history(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Get recent announcement history for admin review."""
-        async with self._connect() as db:
-            cursor = await db.execute(
+        async with self._connect() as conn:
+            rows = await conn.fetch(
                 '''SELECT id, message, target, status, sent_count, failed_count,
                           blocked_count, scheduled_at, sent_at, created_at
-                   FROM announcements ORDER BY created_at DESC LIMIT ?''',
-                (limit,)
+                   FROM announcements ORDER BY created_at DESC LIMIT $1''',
+                limit
             )
-            rows = await cursor.fetchall()
             return [{'id': r[0], 'message': r[1], 'target': r[2], 'status': r[3],
                      'sent_count': r[4], 'failed_count': r[5], 'blocked_count': r[6],
                      'scheduled_at': r[7], 'sent_at': r[8], 'created_at': r[9]} for r in rows]
 
     async def get_users_for_announcement(self, target: str) -> List[int]:
-        """Get telegram_ids matching the announcement target filter.
-
-        Targets: 'all', 'paid', 'free'/'scout', country code (e.g. 'NG'),
-                 or a specific telegram_id number.
-        """
-        async with self._connect() as db:
+        """Get telegram_ids matching the announcement target filter."""
+        async with self._connect() as conn:
             if target.isdigit():
                 return [int(target)]
 
             base_where = "keywords IS NOT NULL AND keywords != ''"
 
             if target == 'all':
-                query = f'SELECT telegram_id FROM users WHERE {base_where}'
-                cursor = await db.execute(query)
+                rows = await conn.fetch(f'SELECT telegram_id FROM users WHERE {base_where}')
             elif target == 'paid':
-                query = f'''SELECT telegram_id FROM users
-                           WHERE {base_where} AND (is_paid = 1 OR
-                           (subscription_plan != 'scout' AND subscription_expiry > ?))'''
-                cursor = await db.execute(query, (datetime.now().isoformat(),))
+                rows = await conn.fetch(
+                    f'''SELECT telegram_id FROM users
+                       WHERE {base_where} AND (is_paid = TRUE OR
+                       (subscription_plan != 'scout' AND subscription_expiry > $1))''',
+                    datetime.now().isoformat()
+                )
             elif target in ('free', 'scout'):
-                query = f'''SELECT telegram_id FROM users
-                           WHERE {base_where} AND (subscription_plan = 'scout' OR
-                           subscription_plan IS NULL OR subscription_expiry <= ? OR subscription_expiry IS NULL)
-                           AND is_paid = 0'''
-                cursor = await db.execute(query, (datetime.now().isoformat(),))
+                rows = await conn.fetch(
+                    f'''SELECT telegram_id FROM users
+                       WHERE {base_where} AND (subscription_plan = 'scout' OR
+                       subscription_plan IS NULL OR subscription_expiry <= $1 OR subscription_expiry IS NULL)
+                       AND is_paid = FALSE''',
+                    datetime.now().isoformat()
+                )
             else:
-                # Assume country code
-                query = f'SELECT telegram_id FROM users WHERE {base_where} AND country_code = ?'
-                cursor = await db.execute(query, (target.upper(),))
+                rows = await conn.fetch(
+                    f'SELECT telegram_id FROM users WHERE {base_where} AND country_code = $1',
+                    target.upper()
+                )
 
-            rows = await cursor.fetchall()
             return [r[0] for r in rows]
+
 
 # Global database instance
 db_manager = DatabaseManager()

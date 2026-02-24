@@ -45,19 +45,47 @@ services:
         limits:
           memory: 800M
 
+  postgres:
+    image: postgres:16-alpine
+    container_name: outbid_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: outbid
+      POSTGRES_USER: outbid
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-outbid_secret}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - outbid_network
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U outbid"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   outbid_bot:
     build: .
     container_name: outbid_bot
     restart: always
     depends_on:
-      - cloudflare_bypass_1
-      - cloudflare_bypass_2
-      - cloudflare_bypass_3
+      cloudflare_bypass_1:
+        condition: service_started
+      cloudflare_bypass_2:
+        condition: service_started
+      cloudflare_bypass_3:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
     environment:
       - DISPLAY=:99
       - CLOUDFLARE_BYPASS_URLS=http://cloudflare_bypass_1:8000,http://cloudflare_bypass_2:8000,http://cloudflare_bypass_3:8000
+      - DATABASE_URL=postgresql://outbid:${POSTGRES_PASSWORD:-outbid_secret}@postgres:5432/outbid
       - DATABASE_PATH=/app/data/upwork_bot.db
     volumes:
       - ./data:/app/data
@@ -73,10 +101,14 @@ services:
     build: .
     container_name: outbid_webhooks
     restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: ["python", "webhook_server.py"]
     env_file:
       - .env
     environment:
+      - DATABASE_URL=postgresql://outbid:${POSTGRES_PASSWORD:-outbid_secret}@postgres:5432/outbid
       - DATABASE_PATH=/app/data/upwork_bot.db
     ports:
       - "5000:5000"  # Expose webhook port
@@ -92,3 +124,6 @@ services:
 networks:
   outbid_network:
     driver: bridge
+
+volumes:
+  pgdata:

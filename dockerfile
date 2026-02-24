@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y \
     libnss3 \
     libxi6 \
     libglib2.0-0 \
+    gcc \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome (Stable) - using modern GPG key method

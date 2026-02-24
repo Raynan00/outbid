@@ -8,7 +8,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.0.0
@@ -16,17 +16,62 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          command_timeout: 30m
           script: |
+            set -e
             cd ~/outbid
-            
+
             # Pull latest changes
             git pull origin main
-            
-            # Rebuild and restart containers
-            sudo docker-compose down
-            sudo docker-compose up -d --build
-            
+
+            # Build new images
+            sudo docker-compose build
+
+            # --- SQLite → PostgreSQL migration (one-time) ---
+            SQLITE_FILE="./data/upwork_bot.db"
+            if [ -f "$SQLITE_FILE" ]; then
+              echo "📦 SQLite database found — running migration..."
+
+              # Start only Postgres and wait for healthy
+              sudo docker-compose up -d postgres
+              echo "⏳ Waiting for Postgres to be healthy..."
+              for i in $(seq 1 30); do
+                if sudo docker-compose exec -T postgres pg_isready -U outbid > /dev/null 2>&1; then
+                  echo "✅ Postgres is ready"
+                  break
+                fi
+                if [ "$i" -eq 30 ]; then
+                  echo "❌ Postgres failed to start"
+                  exit 1
+                fi
+                sleep 2
+              done
+
+              # Stop bot/webhook if running (they'd fail against empty DB)
+              sudo docker-compose stop outbid_bot webhook_server 2>/dev/null || true
+
+              # Init Postgres schema via one-off container
+              echo "🗄️ Creating Postgres schema..."
+              sudo docker-compose run --rm --no-deps outbid_bot \
+                python -c "import asyncio; from database import DatabaseManager; dm = DatabaseManager(); asyncio.run(dm.init_db()); asyncio.run(dm.close()); print('Schema created')"
+
+              # Run migration
+              echo "🔄 Migrating data from SQLite to Postgres..."
+              sudo docker-compose run --rm --no-deps outbid_bot \
+                python migrate_sqlite_to_postgres.py
+
+              # Rename SQLite file so migration doesn't run again
+              mv "$SQLITE_FILE" "${SQLITE_FILE}.migrated"
+              echo "✅ Migration complete — SQLite file renamed to upwork_bot.db.migrated"
+            else
+              echo "ℹ️ No SQLite database found — skipping migration"
+            fi
+
+            # Start/restart all containers
+            sudo docker-compose up -d
+
             # Show status
             sudo docker-compose ps
-            
+
             echo "✅ Deployment complete!"

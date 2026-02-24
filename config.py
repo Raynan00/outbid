@@ -41,7 +41,10 @@ class Config:
     ]
 
     # Database Configuration
-    DATABASE_PATH: str = os.getenv('DATABASE_PATH', 'upwork_bot.db')
+    DATABASE_URL: str = os.getenv('DATABASE_URL', 'postgresql://outbid:outbid_secret@localhost:5432/outbid')
+    DATABASE_POOL_MIN: int = int(os.getenv('DATABASE_POOL_MIN', '2'))
+    DATABASE_POOL_MAX: int = int(os.getenv('DATABASE_POOL_MAX', '10'))
+    DATABASE_PATH: str = os.getenv('DATABASE_PATH', 'upwork_bot.db')  # Legacy: used by migration script only
 
     # Scanner Configuration - CENTRALIZED THROTTLE
     # Change this ONE value to control how often scans run globally

@@ -5,7 +5,7 @@ Handles user commands, onboarding, strategy mode, and job alerts with AI-generat
 
 import asyncio
 import logging
-import aiosqlite
+
 import re
 from datetime import datetime
 from typing import List, Dict, Any
@@ -1395,12 +1395,7 @@ class UpworkBot:
                 return
             
             # Get job match stats
-            async with aiosqlite.connect(db_manager.db_path) as db:
-                cursor = await db.execute(
-                    'SELECT COUNT(*) FROM seen_jobs WHERE telegram_id = ?',
-                    (target_id,)
-                )
-                jobs_matched = (await cursor.fetchone())[0]
+            jobs_matched = await db_manager.get_user_jobs_matched_count(target_id)
             
             # Format bio (truncate if too long)
             bio = info.get('context') or 'Not set'
@@ -1481,12 +1476,8 @@ class UpworkBot:
 
         try:
             if not args:
-                # List all promo codes - get from database directly
-                async with aiosqlite.connect(db_manager.db_path) as db:
-                    cursor = await db.execute(
-                        'SELECT code, discount_percent, times_used, conversions, is_active, created_at FROM promo_codes ORDER BY created_at DESC'
-                    )
-                    promos = await cursor.fetchall()
+                # List all promo codes
+                promos = await db_manager.get_all_promo_codes()
 
                 if not promos:
                     await self.safe_reply_text(
