@@ -69,7 +69,7 @@ TABLES = [
         ],
         'has_serial_id': True,
         'bool_columns': ['is_paid', 'is_auto_renewal'],
-        'datetime_columns': ['subscription_expiry', 'created_at', 'updated_at'],
+        'datetime_columns': ['created_at', 'updated_at'],
     },
     {
         'name': 'referrals',
@@ -118,7 +118,7 @@ TABLES = [
         'columns': ['id', 'message', 'target', 'scheduled_at', 'sent_at', 'status', 'sent_count', 'failed_count', 'blocked_count', 'created_by', 'created_at'],
         'has_serial_id': True,
         'bool_columns': [],
-        'datetime_columns': ['scheduled_at', 'sent_at', 'created_at'],
+        'datetime_columns': ['created_at'],
     },
 ]
 
