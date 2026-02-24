@@ -176,9 +176,6 @@ async def migrate_table(sqlite_db, pg_conn, table_def):
             converted.append(tuple(row_list))
         rows = converted
 
-    # Truncate target table first (makes re-runs safe after partial migration)
-    await pg_conn.execute(f"TRUNCATE {table_name} CASCADE")
-
     # Bulk insert into Postgres using copy_records_to_table for speed
     start = time.time()
     try:
@@ -246,11 +243,25 @@ async def main():
     total_rows = 0
 
     try:
-        # Migrate each table (order matters for foreign keys)
+        # Disable FK constraints for the entire migration
+        # (SQLite doesn't enforce FKs, so orphaned rows exist)
+        await pg_conn.execute("SET session_replication_role = 'replica'")
+        logger.info("FK constraints disabled for migration")
+
+        # Truncate all tables upfront to avoid CASCADE confusion between related tables
+        all_tables = ', '.join(t['name'] for t in TABLES)
+        await pg_conn.execute(f"TRUNCATE {all_tables} CASCADE")
+        logger.info(f"Truncated all tables: {all_tables}")
+
+        # Migrate each table
         logger.info("\n--- Starting migration ---")
         for table_def in TABLES:
             count = await migrate_table(sqlite_db, pg_conn, table_def)
             total_rows += count
+
+        # Re-enable FK constraints
+        await pg_conn.execute("SET session_replication_role = 'DEFAULT'")
+        logger.info("FK constraints re-enabled")
 
         # Reset sequences
         logger.info("\n--- Resetting sequences ---")
