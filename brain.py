@@ -1,5 +1,5 @@
 """
-AI-powered proposal generator supporting multiple providers (OpenAI, Gemini).
+AI-powered proposal generator supporting multiple providers (OpenAI, Gemini, Claude).
 Generates custom cover letters for Upwork job applications.
 """
 
@@ -109,11 +109,50 @@ class GeminiProvider(AIProvider):
         return "Google Gemini"
 
 
+class ClaudeProvider(AIProvider):
+    """Anthropic Claude provider implementation."""
+
+    def __init__(self, api_key: str, model: str = "claude-haiku-4-5-20251001"):
+        try:
+            import anthropic
+            self.client = anthropic.AsyncAnthropic(api_key=api_key)
+            self.model = model
+        except ImportError:
+            raise ImportError("Anthropic package not installed. Run: pip install anthropic")
+
+    async def generate_text(self, prompt: str, system_prompt: str = "", max_tokens: int = 1000) -> Optional[str]:
+        """Generate text using Claude."""
+        try:
+            kwargs = {
+                'model': self.model,
+                'max_tokens': max_tokens,
+                'messages': [{"role": "user", "content": prompt}],
+            }
+            if system_prompt:
+                kwargs['system'] = system_prompt
+
+            response = await self.client.messages.create(**kwargs)
+
+            if response and response.content:
+                return response.content[0].text.strip()
+            else:
+                logger.error("Claude returned empty response")
+                return None
+
+        except Exception as e:
+            logger.error(f"Claude generation failed: {e}")
+            return None
+
+    def get_provider_name(self) -> str:
+        return f"Claude ({self.model})"
+
+
 class ProposalGenerator:
     """Generates custom cover letters using configurable AI providers."""
 
     def __init__(self):
         self.provider = self._initialize_provider()
+        self.fallback_provider = self._initialize_fallback()
         self.max_tokens = config.AI_MAX_TOKENS
         # Limit concurrent AI requests to avoid rate limits
         # Configurable via AI_CONCURRENT_REQUESTS (default: 10)
@@ -134,12 +173,27 @@ class ProposalGenerator:
                 api_key=config.GEMINI_API_KEY,
                 model=config.GEMINI_MODEL
             )
+        elif provider_type == "claude":
+            return ClaudeProvider(
+                api_key=config.ANTHROPIC_API_KEY,
+                model=config.CLAUDE_MODEL
+            )
         else:
             logger.warning(f"Unknown AI provider '{provider_type}', defaulting to OpenAI")
             return OpenAIProvider(
                 api_key=config.OPENAI_API_KEY,
                 model=config.OPENAI_MODEL
             )
+
+    def _initialize_fallback(self) -> Optional[AIProvider]:
+        """Initialize fallback provider (Claude Haiku by default)."""
+        try:
+            if config.ANTHROPIC_API_KEY:
+                logger.info("Fallback AI provider: Claude Haiku")
+                return ClaudeProvider(api_key=config.ANTHROPIC_API_KEY, model=config.CLAUDE_MODEL)
+        except Exception as e:
+            logger.warning(f"Failed to initialize fallback AI provider: {e}")
+        return None
 
     async def generate_proposal(self, job_data: Dict[str, Any], user_context: Dict[str, Any]) -> Optional[str]:
         """
@@ -167,12 +221,40 @@ class ProposalGenerator:
             if proposal:
                 logger.info(f"Generated proposal for job: {job_data.get('id', 'unknown')} using {self.provider.get_provider_name()}")
                 return proposal
-            else:
-                logger.error("AI provider returned empty response")
-                return None
+
+            # Primary failed, try fallback
+            if self.fallback_provider:
+                logger.warning(f"Primary AI ({self.provider.get_provider_name()}) returned empty, trying fallback ({self.fallback_provider.get_provider_name()})")
+                async with self._semaphore:
+                    proposal = await self.fallback_provider.generate_text(
+                        prompt=user_prompt,
+                        system_prompt=system_prompt,
+                        max_tokens=self.max_tokens
+                    )
+                if proposal:
+                    logger.info(f"Fallback generated proposal for job: {job_data.get('id', 'unknown')} using {self.fallback_provider.get_provider_name()}")
+                    return proposal
+
+            logger.error("All AI providers returned empty response")
+            return None
 
         except Exception as e:
-            logger.error(f"Failed to generate proposal: {e}")
+            logger.error(f"Primary AI failed: {e}")
+            # Try fallback on exception too
+            if self.fallback_provider:
+                try:
+                    logger.warning(f"Trying fallback AI ({self.fallback_provider.get_provider_name()}) after primary exception")
+                    async with self._semaphore:
+                        proposal = await self.fallback_provider.generate_text(
+                            prompt=user_prompt,
+                            system_prompt=system_prompt,
+                            max_tokens=self.max_tokens
+                        )
+                    if proposal:
+                        logger.info(f"Fallback generated proposal for job: {job_data.get('id', 'unknown')}")
+                        return proposal
+                except Exception as fallback_error:
+                    logger.error(f"Fallback AI also failed: {fallback_error}")
             return None
 
     async def generate_strategy(self, job_data: Dict[str, Any], user_context: Dict[str, Any], strategy_input: str, original_proposal: str = "") -> Optional[str]:

@@ -3426,16 +3426,21 @@ class UpworkBot:
                     logger.error(f"Failed to send alert to user {alert_data.get('user_id')}: {e}")
                     return False
             
-            # Send all messages concurrently (Telegram API queues automatically at 30 msg/sec)
+            # Send messages in rate-limited batches (Telegram allows 30 msg/sec)
             all_alerts = proposal_alerts + limit_alerts + scout_alerts
+            sent_count = 0
+            BATCH_SIZE = 25
             if all_alerts:
-                send_results = await asyncio.gather(
-                    *[send_prepared_alert(alert) for alert in all_alerts],
-                    return_exceptions=True
-                )
-                sent_count = sum(1 for r in send_results if r is True)
-            else:
-                sent_count = 0
+                for i in range(0, len(all_alerts), BATCH_SIZE):
+                    batch = all_alerts[i:i + BATCH_SIZE]
+                    batch_results = await asyncio.gather(
+                        *[send_prepared_alert(alert) for alert in batch],
+                        return_exceptions=True
+                    )
+                    sent_count += sum(1 for r in batch_results if r is True)
+                    # Sleep between batches to stay under Telegram rate limit
+                    if i + BATCH_SIZE < len(all_alerts):
+                        await asyncio.sleep(1)
             
             total_time = time.time() - start_time
             send_time = time.time() - send_start

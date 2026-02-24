@@ -66,7 +66,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 2G
 
   # Webhook Server for Payment Confirmations (Paystack/Stripe)
   webhook_server:
@@ -87,7 +87,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
 
 networks:
   outbid_network:

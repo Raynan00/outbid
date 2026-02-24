@@ -19,13 +19,17 @@ class Config:
         raise ValueError("TELEGRAM_TOKEN environment variable is required")
 
     # AI Provider Configuration
-    AI_PROVIDER: str = os.getenv('AI_PROVIDER', 'openai').lower()  # 'openai' or 'gemini'
+    AI_PROVIDER: str = os.getenv('AI_PROVIDER', 'openai').lower()  # 'openai', 'gemini', or 'claude'
 
     # OpenAI Configuration (required if AI_PROVIDER=openai)
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
 
     # Gemini Configuration (required if AI_PROVIDER=gemini)
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
+
+    # Claude/Anthropic Configuration (used as fallback, or primary if AI_PROVIDER=claude)
+    ANTHROPIC_API_KEY: str = os.getenv('ANTHROPIC_API_KEY', '')
+    CLAUDE_MODEL: str = os.getenv('CLAUDE_MODEL', 'claude-haiku-4-5-20251001')
 
     # Upwork Search Configuration
     UPWORK_SEARCH_URL: str = os.getenv('UPWORK_SEARCH_URL', 'https://www.upwork.com/nx/search/jobs/?sort=recency&per_page=50')
