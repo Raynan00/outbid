@@ -191,11 +191,12 @@ async def handle_paystack_webhook(
             customer_code = tx_data.get('customer', {}).get('customer_code')
             paid_with_card = channel == 'card'
             
-            # Grant access
+            # Grant access (only track promo conversion on initial payment, not renewals)
             success = await billing_service.grant_access(
                 telegram_id=telegram_id,
                 plan=plan,
-                payment_provider='paystack'
+                payment_provider='paystack',
+                track_conversion=not is_renewal
             )
             
             if success:
@@ -355,13 +356,14 @@ async def handle_stripe_webhook(
                     except Exception as e:
                         logger.error(f"Failed to copy metadata to subscription: {e}")
                 
-                # Grant access
+                # Grant access (initial payment — track promo conversion)
                 success = await billing_service.grant_access(
                     telegram_id=telegram_id,
                     plan='monthly',
-                    payment_provider='stripe'
+                    payment_provider='stripe',
+                    track_conversion=True
                 )
-                
+
                 if success:
                     # Check for pending job and auto-reveal (this clears the pending job)
                     had_pending = await auto_reveal_pending_job(telegram_id)
@@ -389,11 +391,12 @@ async def handle_stripe_webhook(
                     if telegram_id:
                         telegram_id = int(telegram_id)
                         
-                        # Grant another month
+                        # Grant another month (renewal — no conversion tracking)
                         await billing_service.grant_access(
                             telegram_id=telegram_id,
                             plan='monthly',
-                            payment_provider='stripe'
+                            payment_provider='stripe',
+                            track_conversion=False
                         )
                         
                         logger.info(f"Renewed subscription for user {telegram_id}")
@@ -490,11 +493,13 @@ async def payment_callback(request: Request):
             
             # BACKUP: Grant access here in case webhook failed
             # This is idempotent - if webhook already processed, this just updates to same values
+            # No conversion tracking here — webhook handles it to avoid double-counting
             try:
                 await billing_service.grant_access(
                     telegram_id=telegram_id,
                     plan=plan,
-                    payment_provider='paystack'
+                    payment_provider='paystack',
+                    track_conversion=False
                 )
                 logger.info(f"Backup grant_access for user {telegram_id}, plan: {plan}")
                 

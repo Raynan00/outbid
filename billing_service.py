@@ -382,19 +382,21 @@ class BillingService:
     # ==================== GRANT ACCESS ====================
     
     async def grant_access(
-        self, 
-        telegram_id: int, 
-        plan: str, 
-        payment_provider: str
+        self,
+        telegram_id: int,
+        plan: str,
+        payment_provider: str,
+        track_conversion: bool = False
     ) -> bool:
         """
         Grant subscription access to user after payment confirmation.
-        
+
         Args:
             telegram_id: User's Telegram ID
             plan: 'daily', 'weekly', or 'monthly'
             payment_provider: 'paystack' or 'stripe'
-            
+            track_conversion: Only True for initial payments (not renewals or backup callbacks)
+
         Returns:
             True if successful, False otherwise
         """
@@ -411,11 +413,12 @@ class BillingService:
                 is_auto_renewal=is_auto_renewal
             )
 
-            # Track promo conversion if user used a promo code
-            promo = await db_manager.get_user_promo(telegram_id)
-            if promo:
-                await db_manager.increment_promo_conversion(promo['code'])
-                logger.info(f"Tracked conversion for promo code {promo['code']} from user {telegram_id}")
+            # Track promo conversion only on first payment (not renewals or backup callbacks)
+            if track_conversion:
+                promo = await db_manager.get_user_promo(telegram_id)
+                if promo:
+                    await db_manager.increment_promo_conversion(promo['code'])
+                    logger.info(f"Tracked conversion for promo code {promo['code']} from user {telegram_id}")
 
             logger.info(f"Granted {plan} subscription to user {telegram_id} via {payment_provider}, expires: {expiry}")
             return True
