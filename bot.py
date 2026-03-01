@@ -3496,10 +3496,13 @@ class UpworkBot:
                         desc = re.sub(
                             r'^(Posted\s+\d+\s+\w+\s+ago\s*)?'
                             r'(Hourly:?\s*\$[\d.,]+\s*-?\s*\$?[\d.,]*\s*)?'
-                            r'(Fixed.price:?\s*\$[\d.,]+\s*)?'
+                            r'(Fixed[\s-]*price\s*)?'
+                            r'(Est\.?\s*budget:?\s*\$[\d.,]+\s*)?'
                             r'(Budget:?\s*\$[\d.,]+\s*)?'
                             r'(Expert\s*|Intermediate\s*|Entry Level\s*)?'
-                            r'(Est\.?\s*time:?\s*[^.]*?\s*(?:Less than|More than|hrs?/week)\s*)?',
+                            r'(Est\.?\s*time:?\s*)?'
+                            r'(\d+\s*(?:to\s*\d+\s*)?(?:months?|weeks?|days?)\s*,?\s*)?'
+                            r'((?:Less|More)\s+than\s+\d+\s*hrs?/week\s*)?',
                             '', desc, flags=re.IGNORECASE
                         ).strip()
                         if len(desc) > 200:
