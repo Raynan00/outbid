@@ -968,27 +968,27 @@ class UpworkBot:
             # Get scanner status (will be passed from main.py)
             scanner_status = context.bot_data.get('scanner_status', {})
 
-            status_msg = "📊 **Bot Status**\n\n"
+            status_msg = "📊 *Bot Status*\n\n"
 
             # Scanner status
             if scanner_status:
-                status_msg += f"🔍 **Scanner:** {'🟢 Running' if scanner_status.get('is_running') else '🔴 Stopped'}\n"
+                status_msg += f"🔍 *Scanner:* {'🟢 Running' if scanner_status.get('is_running') else '🔴 Stopped'}\n"
                 if scanner_status.get('last_scan_time'):
                     status_msg += f"⏰ Last scan: {scanner_status['last_scan_time']}\n"
                 status_msg += f"⚡ Scan interval: {scanner_status.get('scan_interval', 'N/A')} seconds\n"
             else:
-                status_msg += "🔍 **Scanner:** Status unavailable\n"
+                status_msg += "🔍 *Scanner:* Status unavailable\n"
 
             # Keywords
             keywords = config.KEYWORDS
-            status_msg += f"\n🎯 **Monitored Keywords:** {', '.join(keywords)}\n"
+            status_msg += f"\n🎯 *Monitored Keywords:* {', '.join(keywords)}\n"
 
             # User stats
             user_info = await db_manager.get_user_info(user_id)
             if user_info:
-                status_msg += f"\n👤 **Your Account:** {'✅ Paid' if user_info['is_paid'] else '❌ Free Trial'}\n"
-                status_msg += f"🎯 **Your Keywords:** {user_info['keywords'] or 'Not set'}\n"
-                status_msg += f"📝 **Bio Status:** {'✅ Set' if user_info['context'] else '❌ Not set'}\n"
+                status_msg += f"\n👤 *Your Account:* {'✅ Paid' if user_info['is_paid'] else '❌ Free Trial'}\n"
+                status_msg += f"🎯 *Your Keywords:* {user_info['keywords'] or 'Not set'}\n"
+                status_msg += f"📝 *Bio Status:* {'✅ Set' if user_info['context'] else '❌ Not set'}\n"
 
             # Recent jobs count
             recent_jobs = await db_manager.get_recent_jobs(hours=24)
