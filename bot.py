@@ -3478,17 +3478,34 @@ class UpworkBot:
                         if posted:
                             meta_line += f"\n{posted}"
 
-                        # Description preview (first 300 chars)
-                        desc = (job_dict.get('description') or '').strip()
-                        if len(desc) > 300:
-                            desc_preview = desc[:300].rsplit(' ', 1)[0] + '...'
-                        else:
-                            desc_preview = desc
-
                         skills_line = ''
                         tags = job_dict.get('tags', [])
                         if tags:
                             skills_line = f"Skills: {', '.join(tags[:5])}\n"
+
+                        # Description preview — strip leading metadata that duplicates the header
+                        desc = (job_dict.get('description') or '').strip()
+                        # The description often starts with: "Posted X ago Title Budget Expert Est. time: ..."
+                        # Strip the title and known metadata from the beginning
+                        title_str = job_data.title
+                        if title_str and title_str in desc:
+                            # Take everything after the title
+                            desc = desc[desc.index(title_str) + len(title_str):].strip()
+                        # Strip common metadata prefixes that remain
+                        import re
+                        desc = re.sub(
+                            r'^(Posted\s+\d+\s+\w+\s+ago\s*)?'
+                            r'(Hourly:?\s*\$[\d.,]+\s*-?\s*\$?[\d.,]*\s*)?'
+                            r'(Fixed.price:?\s*\$[\d.,]+\s*)?'
+                            r'(Budget:?\s*\$[\d.,]+\s*)?'
+                            r'(Expert\s*|Intermediate\s*|Entry Level\s*)?'
+                            r'(Est\.?\s*time:?\s*[^.]*?\s*(?:Less than|More than|hrs?/week)\s*)?',
+                            '', desc, flags=re.IGNORECASE
+                        ).strip()
+                        if len(desc) > 200:
+                            desc_preview = desc[:200].rsplit(' ', 1)[0] + '...'
+                        else:
+                            desc_preview = desc
 
                         preview_msg = (
                             f"NEW JOB ALERT\n\n"
@@ -3500,7 +3517,7 @@ class UpworkBot:
                         if skills_line:
                             preview_msg += f"{skills_line}"
                         if desc_preview:
-                            preview_msg += f"\n_{desc_preview}_\n"
+                            preview_msg += f"\n{desc_preview}\n"
                         preview_msg += "\nTap below to generate your custom AI proposal."
 
                         keyboard = [
