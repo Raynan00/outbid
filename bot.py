@@ -2373,6 +2373,110 @@ class UpworkBot:
                 )
             return
 
+        elif query.data.startswith("generate_"):
+            # Paid user on-demand proposal generation
+            job_id = query.data.replace("generate_", "")
+
+            # Verify user still has paid subscription
+            permissions = await access_service.get_user_permissions(user_id)
+            if not permissions.get('can_view_proposal', False):
+                await self._show_upgrade_options(query, user_id)
+                return
+
+            # Get job data from DB
+            job_data_dict = await db_manager.get_job_for_strategy(job_id)
+            if not job_data_dict:
+                await query.edit_message_text(
+                    text="Job data not found. This job may have expired.",
+                    parse_mode='Markdown'
+                )
+                return
+
+            # Check draft limit
+            MAX_DRAFTS = config.MAX_PROPOSAL_DRAFTS
+            try:
+                draft_counts = await db_manager.get_proposal_draft_count(user_id, job_id)
+                draft_count = draft_counts['draft_count']
+            except Exception:
+                draft_count = 0
+
+            if draft_count >= MAX_DRAFTS:
+                keyboard = [
+                    [InlineKeyboardButton("🚀 Open Job on Upwork", url=job_data_dict['link'])],
+                    [InlineKeyboardButton("🧠 War Room (Refine Existing)", callback_data=f"strategy_{job_id}")]
+                ]
+                await query.edit_message_text(
+                    text=f"You've generated {draft_count} proposals for this job.\n\n"
+                         f"💡 *Tip:* Try editing your previous proposal instead of generating a new one.\n\n"
+                         f"Use the War Room button below to refine your existing proposal.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return
+
+            # Show generating state
+            await query.edit_message_text(
+                text="Generating your proposal...\n\nThis may take a few seconds.",
+                parse_mode='Markdown'
+            )
+
+            # Get user context
+            user_context = await db_manager.get_user_context(user_id)
+            if not user_context:
+                await query.edit_message_text(
+                    text="User profile not found. Use /start to set up.",
+                    parse_mode='Markdown'
+                )
+                return
+
+            # Generate proposal (AI call happens here, on demand)
+            try:
+                proposal_text = await self.proposal_generator.generate_proposal(
+                    job_data_dict,
+                    user_context
+                )
+
+                if not proposal_text:
+                    await query.edit_message_text(
+                        text="Failed to generate proposal. Please try again later.",
+                        parse_mode='Markdown'
+                    )
+                    return
+
+                # Increment draft count
+                try:
+                    await db_manager.increment_proposal_draft(user_id, job_id, is_strategy=False)
+                except Exception as e:
+                    logger.error(f"Failed to increment draft count for user {user_id}: {e}")
+
+                # Format full proposal message
+                message_text = self.proposal_generator.format_proposal_for_telegram(
+                    proposal_text, job_data_dict,
+                    draft_count=draft_count + 1, max_drafts=MAX_DRAFTS
+                )
+
+                keyboard = [
+                    [InlineKeyboardButton("🚀 Open Job on Upwork", url=job_data_dict['link'])],
+                    [InlineKeyboardButton("🧠 Brainstorm Strategy", callback_data=f"strategy_{job_id}")]
+                ]
+
+                await query.edit_message_text(
+                    text=message_text,
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup(keyboard),
+                    disable_web_page_preview=True
+                )
+
+                logger.info(f"On-demand proposal generated for paid user {user_id}, job {job_id}")
+
+            except Exception as e:
+                logger.error(f"Error generating on-demand proposal for user {user_id}, job {job_id}: {e}")
+                await query.edit_message_text(
+                    text="An error occurred generating your proposal. Please try again later.",
+                    parse_mode='Markdown'
+                )
+            return
+
         elif query.data.startswith("strategy_"):
             job_id = query.data.replace("strategy_", "")
 
@@ -3290,56 +3394,11 @@ class UpworkBot:
                             'message': None
                         }
 
-                    # PAID USER - Generate full proposal with AI
-                    user_context = {
-                        'keywords': user_data.get('keywords', ''),
-                        'context': user_data.get('context', ''),
-                    }
-                    if not user_context.get('keywords'):
-                        return None
-
-                    # Check draft limit
-                    MAX_DRAFTS = config.MAX_PROPOSAL_DRAFTS
-                    try:
-                        draft_counts = await db_manager.get_proposal_draft_count(user_id, job_data.id)
-                        draft_count = draft_counts['draft_count']
-                    except Exception as e:
-                        logger.error(f"Failed to get draft count for user {user_id}: {e}")
-                        draft_count = 0
-
-                    if draft_count >= MAX_DRAFTS:
-                        return {
-                            'user_id': user_id,
-                            'type': 'limit',
-                            'draft_count': draft_count,
-                            'message': None
-                        }
-
-                    # Generate proposal (slow part - happens in parallel)
-                    proposal_text = await self.proposal_generator.generate_proposal(
-                        job_data.to_dict(),
-                        user_context
-                    )
-
-                    if not proposal_text:
-                        return None
-
-                    # Increment draft count
-                    try:
-                        await db_manager.increment_proposal_draft(user_id, job_data.id, is_strategy=False)
-                    except Exception as e:
-                        logger.error(f"Failed to increment draft count for user {user_id}: {e}")
-
-                    # Format message
-                    message_text = self.proposal_generator.format_proposal_for_telegram(
-                        proposal_text, job_data.to_dict(), draft_count=draft_count + 1, max_drafts=MAX_DRAFTS
-                    )
-
+                    # PAID USER - Send preview, generate proposal on demand (saves API costs)
                     return {
                         'user_id': user_id,
-                        'type': 'proposal',
-                        'message': message_text,
-                        'draft_count': draft_count + 1
+                        'type': 'paid_preview',
+                        'message': None
                     }
                 except Exception as e:
                     logger.error(f"Error preparing alert for user {user_data.get('telegram_id')}: {e}")
@@ -3355,10 +3414,10 @@ class UpworkBot:
             valid_alerts = [a for a in prepared_alerts if a and not isinstance(a, Exception)]
             scout_alerts = [a for a in valid_alerts if a.get('type') == 'scout']
             limit_alerts = [a for a in valid_alerts if a.get('type') == 'limit']
-            proposal_alerts = [a for a in valid_alerts if a.get('type') == 'proposal']
-            
+            paid_preview_alerts = [a for a in valid_alerts if a.get('type') == 'paid_preview']
+
             generation_time = time.time() - start_time
-            logger.info(f"Generated {len(proposal_alerts)} proposals, {len(limit_alerts)} limit msgs, {len(scout_alerts)} scout (blurred) in {generation_time:.1f}s")
+            logger.info(f"Prepared {len(paid_preview_alerts)} paid previews, {len(limit_alerts)} limit msgs, {len(scout_alerts)} scout (blurred) in {generation_time:.1f}s")
             
             # Phase 2: Send all messages concurrently (Telegram API handles 30 msg/sec rate limiting)
             send_start = time.time()
@@ -3397,20 +3456,65 @@ class UpworkBot:
                             disable_web_page_preview=True
                         )
                         await db_manager.record_alert_sent(job_data.id, user_id, 'limit')
-                    else:
-                        # Send proposal message (paid user)
+
+                    elif alert_type == 'paid_preview':
+                        # Paid user preview - job info + generate button (no AI call yet)
+                        job_dict = job_data.to_dict()
+
+                        # Build metadata line
+                        meta_parts = []
+                        budget_str = job_dict.get('budget', '')
+                        if budget_str and budget_str != 'N/A':
+                            meta_parts.append(f"Budget: {budget_str}")
+                        jt = job_dict.get('job_type', '')
+                        if jt and jt != 'Unknown':
+                            meta_parts.append(jt)
+                        exp = job_dict.get('experience_level', '')
+                        if exp and exp != 'Unknown':
+                            meta_parts.append(exp)
+
+                        meta_line = ' | '.join(meta_parts)
+                        posted = job_dict.get('posted', '')
+                        if posted:
+                            meta_line += f"\n{posted}"
+
+                        # Description preview (first 300 chars)
+                        desc = (job_dict.get('description') or '').strip()
+                        if len(desc) > 300:
+                            desc_preview = desc[:300].rsplit(' ', 1)[0] + '...'
+                        else:
+                            desc_preview = desc
+
+                        skills_line = ''
+                        tags = job_dict.get('tags', [])
+                        if tags:
+                            skills_line = f"Skills: {', '.join(tags[:5])}\n"
+
+                        preview_msg = (
+                            f"NEW JOB ALERT\n\n"
+                            f"{job_data.title}\n"
+                        )
+                        if meta_line:
+                            preview_msg += f"{meta_line}\n"
+                        preview_msg += f"⏱ Jobs get 10+ proposals in the first hour. Apply fast.\n"
+                        if skills_line:
+                            preview_msg += f"{skills_line}"
+                        if desc_preview:
+                            preview_msg += f"\n_{desc_preview}_\n"
+                        preview_msg += "\nTap below to generate your custom AI proposal."
+
                         keyboard = [
+                            [InlineKeyboardButton("📝 Generate Proposal", callback_data=f"generate_{job_data.id}")],
                             [InlineKeyboardButton("🚀 Open Job on Upwork", url=job_data.link)],
-                            [InlineKeyboardButton("🧠 Brainstorm Strategy", callback_data=f"strategy_{job_data.id}")]
                         ]
                         await self.application.bot.send_message(
                             chat_id=user_id,
-                            text=alert_data['message'],
+                            text=preview_msg,
                             parse_mode='Markdown',
                             reply_markup=InlineKeyboardMarkup(keyboard),
                             disable_web_page_preview=True
                         )
-                        await db_manager.record_alert_sent(job_data.id, user_id, 'proposal')
+                        await db_manager.record_alert_sent(job_data.id, user_id, 'paid_preview')
                     
                     return True
                 except Exception as e:
@@ -3418,7 +3522,7 @@ class UpworkBot:
                     return False
             
             # Send messages in rate-limited batches (Telegram allows 30 msg/sec)
-            all_alerts = proposal_alerts + limit_alerts + scout_alerts
+            all_alerts = paid_preview_alerts + limit_alerts + scout_alerts
             sent_count = 0
             BATCH_SIZE = 25
             if all_alerts:

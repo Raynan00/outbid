@@ -124,6 +124,11 @@ class DatabaseManager:
                     tags TEXT,
                     budget TEXT,
                     published TEXT,
+                    budget_min REAL DEFAULT 0,
+                    budget_max REAL DEFAULT 0,
+                    job_type TEXT DEFAULT 'Unknown',
+                    experience_level TEXT DEFAULT 'Unknown',
+                    posted TEXT DEFAULT '',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -201,6 +206,19 @@ class DatabaseManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+
+            # Schema migrations for existing deployments
+            for col, col_def in [
+                ('budget_min', 'REAL DEFAULT 0'),
+                ('budget_max', 'REAL DEFAULT 0'),
+                ('job_type', "TEXT DEFAULT 'Unknown'"),
+                ('experience_level', "TEXT DEFAULT 'Unknown'"),
+                ('posted', "TEXT DEFAULT ''"),
+            ]:
+                try:
+                    await conn.execute(f'ALTER TABLE jobs ADD COLUMN {col} {col_def}')
+                except Exception:
+                    pass  # Column already exists
 
             logger.info("Database initialized successfully")
 
@@ -566,9 +584,12 @@ class DatabaseManager:
         """Store job data for potential strategy mode usage."""
         async with self._connect() as conn:
             await conn.execute('''
-                INSERT INTO jobs (id, title, link, description, tags, budget, published)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (id) DO UPDATE SET title = $2, link = $3, description = $4, tags = $5, budget = $6, published = $7
+                INSERT INTO jobs (id, title, link, description, tags, budget, published,
+                                  budget_min, budget_max, job_type, experience_level, posted)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                ON CONFLICT (id) DO UPDATE SET
+                    title = $2, link = $3, description = $4, tags = $5, budget = $6, published = $7,
+                    budget_min = $8, budget_max = $9, job_type = $10, experience_level = $11, posted = $12
             ''',
                 job_data['id'],
                 job_data.get('title', ''),
@@ -576,14 +597,21 @@ class DatabaseManager:
                 job_data.get('description', ''),
                 ','.join(job_data.get('tags', [])),
                 job_data.get('budget', ''),
-                str(job_data.get('published', ''))
+                str(job_data.get('published', '')),
+                float(job_data.get('budget_min', 0) or 0),
+                float(job_data.get('budget_max', 0) or 0),
+                job_data.get('job_type', 'Unknown') or 'Unknown',
+                job_data.get('experience_level', 'Unknown') or 'Unknown',
+                job_data.get('posted', '') or ''
             )
 
     async def get_job_for_strategy(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve job data for strategy mode."""
         async with self._connect() as conn:
             result = await conn.fetchrow(
-                'SELECT id, title, link, description, tags, budget, published FROM jobs WHERE id = $1',
+                'SELECT id, title, link, description, tags, budget, published, '
+                'budget_min, budget_max, job_type, experience_level, posted '
+                'FROM jobs WHERE id = $1',
                 job_id
             )
 
@@ -597,7 +625,12 @@ class DatabaseManager:
             'description': result[3],
             'tags': result[4].split(',') if result[4] else [],
             'budget': result[5],
-            'published': result[6]
+            'published': result[6],
+            'budget_min': result[7] or 0,
+            'budget_max': result[8] or 0,
+            'job_type': result[9] or 'Unknown',
+            'experience_level': result[10] or 'Unknown',
+            'posted': result[11] or ''
         }
 
     # Payment Activation
