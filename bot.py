@@ -3489,15 +3489,29 @@ class UpworkBot:
                         # Strip the title and known metadata from the beginning
                         title_str = job_data.title
                         if title_str and title_str in desc:
-                            # Take everything after the title
+                            # Take everything after the exact title
                             desc = desc[desc.index(title_str) + len(title_str):].strip()
+                        elif title_str and len(title_str) > 20:
+                            # Fuzzy match: description may contain a variant of the title
+                            # Match on the first significant chunk (before any dash/parenthesis/pipe)
+                            import re as _re
+                            title_core = _re.split(r'\s*[–—\-\(|]', title_str)[0].strip()
+                            if title_core and len(title_core) > 15 and title_core in desc:
+                                after = desc[desc.index(title_core) + len(title_core):]
+                                # Skip the rest of the title-like line
+                                newline_pos = after.find('\n')
+                                if newline_pos != -1:
+                                    desc = after[newline_pos:].strip()
+                                else:
+                                    desc = after.strip()
                         # Strip common metadata prefixes that remain
                         import re
                         desc = re.sub(
-                            r'^(Posted\s+\d+\s+\w+\s+ago\s*)?'
+                            r'^(Posted\s*\d+\s+\w+\s+ago\s*)?'
                             r'(Hourly:?\s*\$[\d.,]+\s*-?\s*\$?[\d.,]*\s*)?'
                             r'(Hourly\s+)?'
                             r'(Fixed[\s-]*price\s*)?'
+                            r'(Not\s+sure\s*)?'
                             r'(Est\.?\s*budget:?\s*\$[\d.,]+\s*)?'
                             r'(Budget:?\s*\$[\d.,]+\s*)?'
                             r'(Expert\s*|Intermediate\s*|Entry Level\s*)?'
@@ -3507,8 +3521,13 @@ class UpworkBot:
                             r'((?:Less|More)\s+than\s+\d+\s*hrs?/week\s*)?',
                             '', desc, flags=re.IGNORECASE
                         ).strip()
-                        if len(desc) > 350:
-                            desc_preview = desc[:350].rsplit(' ', 1)[0] + '...'
+                        # Second pass: catch metadata that appears after the title was stripped
+                        desc = re.sub(
+                            r'^(Not\s+sure\s*)?(Est\.?\s*budget:?\s*\$[\d.,]+\s*)?',
+                            '', desc, flags=re.IGNORECASE
+                        ).strip()
+                        if len(desc) > 400:
+                            desc_preview = desc[:400].rsplit(' ', 1)[0] + '...'
                         else:
                             desc_preview = desc
 
