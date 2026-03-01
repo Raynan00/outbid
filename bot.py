@@ -1746,11 +1746,11 @@ class UpworkBot:
 
             # Parse target
             target = args[0].lower()
-            valid_targets = ['all', 'paid', 'free', 'scout']
+            valid_targets = ['all', 'paid', 'free', 'scout', 'exhausted', 'exhausted_no_promo', 'exhausted_has_promo']
             if target not in valid_targets and not target.isdigit() and len(target) != 2:
                 await self.safe_reply_text(
                     update,
-                    f"Invalid target `{target}`.\n\nValid: `all`, `paid`, `free`, country code (e.g. `NG`), or telegram\\_id",
+                    f"Invalid target `{target}`.\n\nValid: `all`, `paid`, `free`, `exhausted`, `exhausted_no_promo`, `exhausted_has_promo`, country code (e.g. `NG`), or telegram\\_id",
                     parse_mode='Markdown'
                 )
                 return

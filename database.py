@@ -1388,6 +1388,26 @@ class DatabaseManager:
                        AND is_paid = FALSE''',
                     datetime.now().isoformat()
                 )
+            elif target == 'exhausted':
+                rows = await conn.fetch(
+                    f'''SELECT telegram_id FROM users
+                       WHERE {base_where} AND subscription_plan = 'scout'
+                       AND reveal_credits = 0 AND is_paid = FALSE'''
+                )
+            elif target == 'exhausted_no_promo':
+                rows = await conn.fetch(
+                    f'''SELECT telegram_id FROM users
+                       WHERE {base_where} AND subscription_plan = 'scout'
+                       AND reveal_credits = 0 AND is_paid = FALSE
+                       AND promo_code_used IS NULL'''
+                )
+            elif target == 'exhausted_has_promo':
+                rows = await conn.fetch(
+                    f'''SELECT telegram_id FROM users
+                       WHERE {base_where} AND subscription_plan = 'scout'
+                       AND reveal_credits = 0 AND is_paid = FALSE
+                       AND promo_code_used IS NOT NULL'''
+                )
             else:
                 rows = await conn.fetch(
                     f'SELECT telegram_id FROM users WHERE {base_where} AND country_code = $1',
