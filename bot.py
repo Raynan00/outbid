@@ -3496,11 +3496,13 @@ class UpworkBot:
                         desc = re.sub(
                             r'^(Posted\s+\d+\s+\w+\s+ago\s*)?'
                             r'(Hourly:?\s*\$[\d.,]+\s*-?\s*\$?[\d.,]*\s*)?'
+                            r'(Hourly\s+)?'
                             r'(Fixed[\s-]*price\s*)?'
                             r'(Est\.?\s*budget:?\s*\$[\d.,]+\s*)?'
                             r'(Budget:?\s*\$[\d.,]+\s*)?'
                             r'(Expert\s*|Intermediate\s*|Entry Level\s*)?'
                             r'(Est\.?\s*time:?\s*)?'
+                            r'((?:Less|More)\s+than\s+\d+\s*(?:months?|weeks?|days?)\s*,?\s*)?'
                             r'(\d+\s*(?:to\s*\d+\s*)?(?:months?|weeks?|days?)\s*,?\s*)?'
                             r'((?:Less|More)\s+than\s+\d+\s*hrs?/week\s*)?',
                             '', desc, flags=re.IGNORECASE
