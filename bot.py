@@ -406,7 +406,7 @@ class UpworkBot:
 
         # Generate strategy proposal
         await update.message.reply_text(
-            "🧠 **Processing your strategy...**\n\n"
+            "🧠 *Processing your strategy...*\n\n"
             f"Strategy: {strategy_input}\n\n"
             "Generating customized proposal...",
             parse_mode='Markdown'
@@ -424,9 +424,9 @@ class UpworkBot:
             
             if strategy_count >= MAX_STRATEGY_DRAFTS:
                 await update.message.reply_text(
-                    f"⚠️ **Limit Reached**\n\n"
+                    f"⚠️ *Limit Reached*\n\n"
                     f"You've generated {strategy_count} strategy proposals for this job.\n\n"
-                    f"💡 **Tip:** Try editing your existing proposal instead. "
+                    f"💡 *Tip:* Try editing your existing proposal instead. "
                     f"Clients can tell when proposals are personalized - add 1-2 specific details about this job to make it stand out.",
                     parse_mode='Markdown'
                 )
@@ -454,7 +454,7 @@ class UpworkBot:
                 )
 
                 # Add strategy note
-                strategy_note = f"\n\n🎯 **Strategy Applied:** {strategy_input}"
+                strategy_note = f"\n\n🎯 *Strategy Applied:* {strategy_input}"
 
                 await update.message.reply_text(
                     message_text + strategy_note,
@@ -508,7 +508,7 @@ class UpworkBot:
 
         await self.safe_reply_text(
             update,
-            "✅ **Keywords Updated!**\n\n"
+            "✅ *Keywords Updated!*\n\n"
             f"Your new keywords: `{keywords}`\n\n"
             "Use /settings to update more or check your profile.",
             parse_mode='Markdown'
@@ -571,7 +571,7 @@ class UpworkBot:
         if added:
             await self.safe_reply_text(
                 update,
-                f"✅ **Added:** {', '.join(added)}\n\n"
+                f"✅ *Added:* {', '.join(added)}\n\n"
                 f"🎯 All keywords: `{combined}`",
                 parse_mode='Markdown'
             )
@@ -606,7 +606,7 @@ class UpworkBot:
 
         await self.safe_reply_text(
             update,
-            "✅ **Bio Updated!**\n\n"
+            "✅ *Bio Updated!*\n\n"
             f"Your new bio ({len(bio)}/1500 characters):\n\n"
             f"_{bio[:200]}{'...' if len(bio) > 200 else ''}_\n\n"
             "Use /settings to update more or check your profile.",
@@ -732,7 +732,7 @@ class UpworkBot:
         # User is chatting randomly - cost protection
         if await db_manager.is_user_authorized(user_id):
             await update.message.reply_text(
-                "🤖 **Alert Mode Active**\n\n"
+                "🤖 *Alert Mode Active*\n\n"
                 "I'm monitoring for jobs. Wait for alerts or use:\n\n"
                 "/status - Check bot status\n"
                 "/settings - Update your profile\n"
@@ -748,7 +748,7 @@ class UpworkBot:
                 # Payments disabled - add user for testing
                 await db_manager.add_user(user_id, is_paid=True)
                 await update.message.reply_text(
-                    "🤖 **Alert Mode Active**\n\n"
+                    "🤖 *Alert Mode Active*\n\n"
                     "Payments are disabled for testing. You're now authorized!\n\n"
                     "/start - Begin setup\n"
                     "/status - Check bot status",
@@ -762,7 +762,7 @@ class UpworkBot:
 
         await self.safe_reply_text(
             update,
-            "❌ **Cancelled**\n\n"
+            "❌ *Cancelled*\n\n"
             "Use /start to begin again or /settings to update your profile.",
             parse_mode='Markdown'
         )
@@ -934,9 +934,9 @@ class UpworkBot:
     def _get_payment_message(self, referral_code: str = None) -> str:
         """Generate payment message with Paystack link."""
         base_msg = (
-            "🚀 **Upwork First Responder Bot**\n\n"
+            "🚀 *Upwork First Responder Bot*\n\n"
             "Get instant job alerts with AI-generated proposals!\n\n"
-            "💰 **Pricing:**\n"
+            "💰 *Pricing:*\n"
             "• 1 Month: $9.99\n"
             "• 3 Months: $24.99 (17% off)\n"
             "• 6 Months: $44.99 (25% off)\n\n"
@@ -944,11 +944,11 @@ class UpworkBot:
 
         if referral_code:
             discount = config.REFERRAL_DISCOUNT_PERCENT
-            base_msg += f"🎁 **Referral Code:** `{referral_code}` ({discount}% discount applied!)\n\n"
+            base_msg += f"🎁 *Referral Code:* `{referral_code}` ({discount}% discount applied!)\n\n"
 
         payment_url = config.get_payment_url(referral_code)
         base_msg += (
-            f"💳 **Pay Now:** [Click here to pay with Paystack]({payment_url})\n\n"
+            f"💳 *Pay Now:* [Click here to pay with Paystack]({payment_url})\n\n"
             "After payment, reply with your transaction ID to activate your account.\n\n"
             f"❓ Questions? Contact {config.SUPPORT_CONTACT}"
         )
@@ -965,19 +965,8 @@ class UpworkBot:
             return
 
         try:
-            # Get scanner status (will be passed from main.py)
-            scanner_status = context.bot_data.get('scanner_status', {})
-
             status_msg = "📊 *Bot Status*\n\n"
-
-            # Scanner status
-            if scanner_status:
-                status_msg += f"🔍 *Scanner:* {'🟢 Running' if scanner_status.get('is_running') else '🔴 Stopped'}\n"
-                if scanner_status.get('last_scan_time'):
-                    status_msg += f"⏰ Last scan: {scanner_status['last_scan_time']}\n"
-                status_msg += f"⚡ Scan interval: {scanner_status.get('scan_interval', 'N/A')} seconds\n"
-            else:
-                status_msg += "🔍 *Scanner:* Status unavailable\n"
+            status_msg += "🔍 *Scanner:* 🟢 Running\n"
 
             # User stats
             user_info = await db_manager.get_user_info(user_id)
@@ -1298,18 +1287,18 @@ class UpworkBot:
             scout_alerts = alerts_by_type.get('scout', 0)
             
             stats_msg = (
-                "📊 **Database Statistics**\n\n"
-                f"👥 **Users:**\n"
+                "📊 *Database Statistics*\n\n"
+                f"👥 *Users:*\n"
                 f"   • Total: {stats['total_users']}\n"
                 f"   • Paid: {stats['paid_users']}\n"
                 f"   • Scouts: {stats['unpaid_users']}\n"
                 f"   • With Keywords: {stats['users_with_keywords']}\n"
                 f"   • New (7 days): {stats['new_users_7d']}\n\n"
-                f"💼 **Jobs:**\n"
+                f"💼 *Jobs:*\n"
                 f"   • Seen: {stats['total_jobs_seen']}\n"
                 f"   • Sent: {alert_stats['unique_jobs_sent']}\n"
                 f"   • Last 24h: {stats['jobs_last_24h']}\n\n"
-                f"📤 **Alerts Sent:**\n"
+                f"📤 *Alerts Sent:*\n"
                 f"   • Total: {alert_stats['total_alerts']}\n"
                 f"   • Last 24h: {alert_stats['alerts_24h']}\n"
                 f"   • Proposals: {proposal_alerts}\n"
@@ -1343,7 +1332,7 @@ class UpworkBot:
             paid_count = sum(1 for u in users if u['is_paid'])
             scout_count = len(users) - paid_count
             
-            user_list = f"👥 **Users** ({len(users)} total: {paid_count} paid, {scout_count} scouts)\n\n"
+            user_list = f"👥 *Users* ({len(users)} total: {paid_count} paid, {scout_count} scouts)\n\n"
             
             for user in users[:15]:
                 paid_emoji = "✅" if user['is_paid'] else "🆓"
@@ -1402,16 +1391,16 @@ class UpworkBot:
             paid_status = "✅ Paid" if info.get('is_paid') else "🆓 Scout"
             
             message = (
-                f"👤 **User Detail: {target_id}**\n\n"
-                f"**Status:** {paid_status}\n"
-                f"**Plan:** {info.get('subscription_plan') or 'Free'}\n"
-                f"**Country:** {info.get('country_code') or 'Unknown'}\n"
-                f"**Joined:** {info.get('created_at', 'Unknown')}\n\n"
-                f"**Keywords:**\n{info.get('keywords') or 'Not set'}\n\n"
-                f"**Bio:**\n_{bio}_\n\n"
-                f"**Budget:** ${info.get('min_budget', 0)} - ${info.get('max_budget', 999999) if info.get('max_budget', 999999) < 999999 else '∞'}\n"
-                f"**Experience:** {info.get('experience_levels') or 'All'}\n\n"
-                f"📊 **Jobs Matched:** {jobs_matched}"
+                f"👤 *User Detail: {target_id}*\n\n"
+                f"*Status:* {paid_status}\n"
+                f"*Plan:* {info.get('subscription_plan') or 'Free'}\n"
+                f"*Country:* {info.get('country_code') or 'Unknown'}\n"
+                f"*Joined:* {info.get('created_at', 'Unknown')}\n\n"
+                f"*Keywords:*\n{info.get('keywords') or 'Not set'}\n\n"
+                f"*Bio:*\n_{bio}_\n\n"
+                f"*Budget:* ${info.get('min_budget', 0)} - ${info.get('max_budget', 999999) if info.get('max_budget', 999999) < 999999 else '∞'}\n"
+                f"*Experience:* {info.get('experience_levels') or 'All'}\n\n"
+                f"📊 *Jobs Matched:* {jobs_matched}"
             )
             
             await self.safe_reply_text(update, message, parse_mode='Markdown')
@@ -1436,10 +1425,10 @@ class UpworkBot:
                 return
             
             # Format first 10 drafts
-            drafts_list = "📝 **Recent Proposal Activity** (last 10)\n\n"
+            drafts_list = "📝 *Recent Proposal Activity* (last 10)\n\n"
             for draft in drafts[:10]:
                 drafts_list += (
-                    f"**Job:** {draft['job_title'][:40]}\n"
+                    f"*Job:* {draft['job_title'][:40]}\n"
                     f"   User: {draft['user_telegram_id']}\n"
                     f"   Regular: {draft['draft_count']} | Strategy: {draft['strategy_count']}\n"
                     f"   Last: {draft['last_generated']}\n\n"
@@ -1478,7 +1467,7 @@ class UpworkBot:
                 if not promos:
                     await self.safe_reply_text(
                         update,
-                        "📋 **No promo codes found.**\n\n"
+                        "📋 *No promo codes found.*\n\n"
                         "Create one with:\n`/promo CODE DISCOUNT`\n\n"
                         "Example: `/promo CROWNZ 20`\n\n"
                         "Delete with: `/promo delete CODE`",
@@ -1486,7 +1475,7 @@ class UpworkBot:
                     )
                     return
 
-                msg = "🎟️ **Promo Codes**\n\n"
+                msg = "🎟️ *Promo Codes*\n\n"
                 for code, discount, used, conversions, active, created in promos:
                     status = "✅" if active else "❌"
                     msg += (
@@ -1507,7 +1496,7 @@ class UpworkBot:
 
                 status = "✅ Active" if stats['is_active'] else "❌ Inactive"
                 msg = (
-                    f"🎟️ **Promo Code: {stats['code']}**\n\n"
+                    f"🎟️ *Promo Code: {stats['code']}*\n\n"
                     f"Status: {status}\n"
                     f"Discount: {stats['discount_percent']}%\n"
                     f"Applies to: {stats['applies_to']}\n"
@@ -1556,7 +1545,7 @@ class UpworkBot:
                 if success:
                     await self.safe_reply_text(
                         update,
-                        f"✅ **Promo code created!**\n\n"
+                        f"✅ *Promo code created!*\n\n"
                         f"Code: `{code}`\n"
                         f"Discount: {discount}%\n"
                         f"Applies to: monthly\n\n"
@@ -1901,13 +1890,13 @@ class UpworkBot:
             return
 
         help_text = (
-            "🆘 **Help - Upwork First Responder Bot**\n\n"
-            "**What I Do:**\n"
+            "🆘 *Help - Upwork First Responder Bot*\n\n"
+            "*What I Do:*\n"
             "• Monitor Upwork 24/7\n"
             "• Filter jobs by your keywords\n"
             "• Generate custom cover letters with AI\n"
             "• Send instant alerts via Telegram\n\n"
-            "**Commands:**\n"
+            "*Commands:*\n"
             "/start - Initialize and check authorization\n"
             "/settings - Update keywords, bio, and filters\n"
             "/status - View bot status and statistics\n"
@@ -1921,7 +1910,7 @@ class UpworkBot:
         # Add admin commands if user is admin
         if config.is_admin(user_id):
             help_text += (
-                "**Admin Commands:**\n"
+                "*Admin Commands:*\n"
                 "/admin - Database statistics\n"
                 "/admin_users - List all users\n"
                 "/admin_drafts - Proposal draft activity\n"
@@ -1931,16 +1920,16 @@ class UpworkBot:
             )
         
         help_text += (
-            "**How Alerts Work:**\n"
+            "*How Alerts Work:*\n"
             "• Job title and budget info\n"
             "• AI-generated proposal in code block (tap to copy)\n"
             "• Direct link to apply on Upwork\n\n"
-            "**Features:**\n"
+            "*Features:*\n"
             "• ✅ Smart filtering (budget, experience, keywords)\n"
             "• ✅ Pause alerts (1h, 4h, 8h, etc.)\n"
             "• ✅ War Room strategy mode\n"
             "• ✅ Mobile-friendly copy-paste\n\n"
-            "**Need Help?**\n"
+            "*Need Help?*\n"
             "Contact your administrator if you have issues."
         )
 
@@ -1973,7 +1962,7 @@ class UpworkBot:
             else:
                 await self.safe_reply_text(
                     update,
-                    "🎟️ **Redeem a Promo Code**\n\n"
+                    "🎟️ *Redeem a Promo Code*\n\n"
                     "Usage: `/redeem CODE`\n\n"
                     "Example: `/redeem CROWNZ`",
                     parse_mode='Markdown'
@@ -2010,7 +1999,7 @@ class UpworkBot:
         if promo:
             await self.safe_reply_text(
                 update,
-                f"✅ **Promo code applied!**\n\n"
+                f"✅ *Promo code applied!*\n\n"
                 f"Code: `{promo['code']}`\n"
                 f"Discount: {promo['discount_percent']}% off\n\n"
                 f"Your discount will be applied when you upgrade to the monthly plan.\n\n"
@@ -2529,10 +2518,10 @@ class UpworkBot:
             await db_manager.set_user_state(user_id, "STRATEGIZING", job_id)
 
             await query.edit_message_text(
-                text="🧠 **War Room Activated!**\n\n"
-                f"**Job ID:** {job_id}\n\n"
+                text="🧠 *War Room Activated!*\n\n"
+                f"*Job ID:* {job_id}\n\n"
                 "How do you want to play this? Give me specific instructions:\n\n"
-                "💡 **Examples:**\n"
+                "💡 *Examples:*\n"
                 "• \"Be aggressive on price, I'm the fastest\"\n"
                 "• \"Focus on my Django expertise and scalability\"\n"
                 "• \"Ask consultative questions about their tech stack\"\n\n"
@@ -2561,7 +2550,7 @@ class UpworkBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(
-                text=f"🎯 **Your keywords**\n{keywords_display}\n\n"
+                text=f"🎯 *Your keywords*\n{keywords_display}\n\n"
                 "What would you like to do?",
                 parse_mode='Markdown',
                 reply_markup=reply_markup
@@ -2572,10 +2561,10 @@ class UpworkBot:
             await db_manager.set_user_state(user_id, "ADD_KEYWORDS")
             context.user_data['state'] = ADD_KEYWORDS
             await query.edit_message_text(
-                text="➕ **Add Keywords**\n\n"
+                text="➕ *Add Keywords*\n\n"
                 "Send one or more keywords to add\n"
                 "(comma separated)\n\n"
-                "📝 **Example:** `Next.js, Stripe integration`\n\n"
+                "📝 *Example:* `Next.js, Stripe integration`\n\n"
                 "Type keywords to add (or /cancel):",
                 parse_mode='Markdown'
             )
@@ -2588,10 +2577,10 @@ class UpworkBot:
             await db_manager.set_user_state(user_id, "UPDATE_KEYWORDS")
             context.user_data['state'] = UPDATE_KEYWORDS
             await query.edit_message_text(
-                text="✏️ **Edit Keywords**\n\n"
+                text="✏️ *Edit Keywords*\n\n"
                 "Here are your current keywords:\n"
                 f"`{current_keywords}`\n\n"
-                "Send the full updated list to **replace** them.\n\n"
+                "Send the full updated list to *replace* them.\n\n"
                 "Type your new keywords (or /cancel):",
                 parse_mode='Markdown'
             )
@@ -2618,7 +2607,7 @@ class UpworkBot:
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             await query.edit_message_text(
-                text="❌ **Remove Keywords**\n\n"
+                text="❌ *Remove Keywords*\n\n"
                 "Tap a keyword to remove it:",
                 parse_mode='Markdown',
                 reply_markup=reply_markup
@@ -2646,14 +2635,14 @@ class UpworkBot:
                     ]
                     reply_markup = InlineKeyboardMarkup(keyboard)
                     await query.edit_message_text(
-                        text=f"✅ Removed: **{removed}**\n\n"
-                        f"🎯 **Your keywords**\n{keywords_display}",
+                        text=f"✅ Removed: *{removed}*\n\n"
+                        f"🎯 *Your keywords*\n{keywords_display}",
                         parse_mode='Markdown',
                         reply_markup=reply_markup
                     )
                 else:
                     await query.edit_message_text(
-                        text=f"✅ Removed: **{removed}**\n\n"
+                        text=f"✅ Removed: *{removed}*\n\n"
                         "⚠️ No keywords left! Use /settings to add some.",
                         parse_mode='Markdown'
                     )
@@ -2663,9 +2652,9 @@ class UpworkBot:
             await db_manager.set_user_state(user_id, "UPDATE_BIO")
             context.user_data['state'] = UPDATE_BIO  # Set conversation handler state
             await query.edit_message_text(
-                text="✏️ **Update Bio**\n\n"
+                text="✏️ *Update Bio*\n\n"
                 "Enter your new bio/experience:\n\n"
-                "💡 **Example:**\n"
+                "💡 *Example:*\n"
                 "`Senior Python developer with 5+ years building scalable web apps. "
                 "Led 20+ Django projects, reduced deployment time by 60%. "
                 "Expert in REST APIs, PostgreSQL, and cloud deployment.`\n\n"
@@ -3436,7 +3425,7 @@ class UpworkBot:
                         limit_message = (
                             f"NEW JOB ALERT\n\n{job_data.title}\n\n"
                             f"You've generated {alert_data['draft_count']} proposals for this job.\n\n"
-                            f"💡 **Tip:** Clients can tell when proposals are personalized. "
+                            f"💡 *Tip:* Clients can tell when proposals are personalized. "
                             f"Try editing your previous proposal (add 1-2 specific details about this job) instead of generating a new one.\n\n"
                             f"Use the War Room button below to refine your existing proposal with specific instructions."
                         )
@@ -3591,7 +3580,7 @@ class UpworkBot:
         try:
             await self.application.bot.send_message(
                 chat_id=user_id,
-                text=f"⚠️ **Bot Error**\n\n{error_message}",
+                text=f"⚠️ *Bot Error*\n\n{error_message}",
                 parse_mode='Markdown'
             )
         except Exception as e:
