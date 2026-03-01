@@ -979,10 +979,6 @@ class UpworkBot:
             else:
                 status_msg += "🔍 *Scanner:* Status unavailable\n"
 
-            # Keywords
-            keywords = config.KEYWORDS
-            status_msg += f"\n🎯 *Monitored Keywords:* {', '.join(keywords)}\n"
-
             # User stats
             user_info = await db_manager.get_user_info(user_id)
             if user_info:
