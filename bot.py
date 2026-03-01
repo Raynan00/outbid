@@ -3505,8 +3505,8 @@ class UpworkBot:
                             r'((?:Less|More)\s+than\s+\d+\s*hrs?/week\s*)?',
                             '', desc, flags=re.IGNORECASE
                         ).strip()
-                        if len(desc) > 200:
-                            desc_preview = desc[:200].rsplit(' ', 1)[0] + '...'
+                        if len(desc) > 350:
+                            desc_preview = desc[:350].rsplit(' ', 1)[0] + '...'
                         else:
                             desc_preview = desc
 
